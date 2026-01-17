@@ -197,6 +197,50 @@ export const getSystemHealth = async (req, res) => {
   }
 };
 
+// Delete user and all their data
+export const deleteUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Validate userId
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Prevent deleting admin user (optional safety check)
+    if (user.email === 'admin') {
+      return res.status(403).json({ error: 'Cannot delete admin user' });
+    }
+
+    // Delete all products associated with this user
+    const deletedProducts = await Product.deleteMany({ userId });
+
+    // Delete all sales associated with this user
+    const deletedSales = await Sale.deleteMany({ userId });
+
+    // Delete the user
+    await User.findByIdAndDelete(userId);
+
+    res.json({
+      message: 'User and all associated data deleted successfully',
+      data: {
+        userId,
+        deletedProducts: deletedProducts.deletedCount,
+        deletedSales: deletedSales.deletedCount,
+      },
+    });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete user' });
+  }
+};
+
 // Get user usage statistics
 export const getUserUsage = async (req, res) => {
   try {

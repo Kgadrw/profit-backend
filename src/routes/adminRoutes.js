@@ -7,6 +7,7 @@ import {
   getApiStats,
   getSystemHealth,
   getUserUsage,
+  deleteUser,
 } from '../controllers/adminController.js';
 
 const router = express.Router();
@@ -28,5 +29,8 @@ router.get('/api-stats', getApiStats);
 
 // Get system health
 router.get('/health', getSystemHealth);
+
+// Delete user and all their data
+router.delete('/users/:userId', deleteUser);
 
 export default router;
