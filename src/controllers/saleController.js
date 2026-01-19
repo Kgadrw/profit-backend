@@ -7,14 +7,15 @@ const getUserId = async (req) => {
   // First try to get userId from header
   const userIdFromHeader = req.headers['x-user-id'];
   if (userIdFromHeader) {
-    return userIdFromHeader;
+    // Validate it's a valid MongoDB ObjectId
+    const mongoose = (await import('mongoose')).default;
+    if (mongoose.Types.ObjectId.isValid(userIdFromHeader)) {
+      return userIdFromHeader;
+    }
   }
   
-  // Fallback: if no header, try to find user by email from localStorage (for backward compatibility)
-  // This should not happen in normal flow, but kept for safety
-  const User = (await import('../models/User.js')).default;
-  const user = await User.findOne();
-  return user?._id;
+  // If no valid userId in header, return null (user must login)
+  return null;
 };
 
 export const getSales = async (req, res) => {
