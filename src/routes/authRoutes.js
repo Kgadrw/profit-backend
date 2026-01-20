@@ -1,22 +1,25 @@
 // Authentication Routes
 import express from 'express';
 import { register, login, getCurrentUser, updateUser, changePin } from '../controllers/authController.js';
+import { authLimiter } from '../middleware/security.js';
+import { validateRegister, validateLogin } from '../middleware/validation.js';
+import { authenticateUser } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Register a new user
-router.post('/register', register);
+// Register a new user (with rate limiting and validation)
+router.post('/register', authLimiter, validateRegister, register);
 
-// Login
-router.post('/login', login);
+// Login (with strict rate limiting and validation)
+router.post('/login', authLimiter, validateLogin, login);
 
-// Get current user
-router.get('/me', getCurrentUser);
+// Get current user (requires authentication)
+router.get('/me', authenticateUser, getCurrentUser);
 
-// Update user information
-router.put('/update', updateUser);
+// Update user information (requires authentication)
+router.put('/update', authenticateUser, updateUser);
 
-// Change PIN
-router.put('/change-pin', changePin);
+// Change PIN (requires authentication)
+router.put('/change-pin', authenticateUser, changePin);
 
 export default router;

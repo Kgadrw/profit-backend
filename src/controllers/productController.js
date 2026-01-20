@@ -141,6 +141,16 @@ export const updateProduct = async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
+    // If stock reaches 0, delete the product
+    if (product.stock === 0) {
+      await Product.findOneAndDelete({ _id: product._id, userId });
+      return res.json({ 
+        message: 'Product updated successfully. Product deleted as stock reached 0.',
+        data: product,
+        deleted: true
+      });
+    }
+
     res.json({ 
       message: 'Product updated successfully',
       data: product 

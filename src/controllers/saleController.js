@@ -10,8 +10,8 @@ const getUserId = async (req) => {
     // Validate it's a valid MongoDB ObjectId
     const mongoose = (await import('mongoose')).default;
     if (mongoose.Types.ObjectId.isValid(userIdFromHeader)) {
-      return userIdFromHeader;
-    }
+    return userIdFromHeader;
+  }
   }
   
   // If no valid userId in header, return null (user must login)
@@ -97,6 +97,11 @@ export const createSale = async (req, res) => {
       if (product) {
         product.stock = Math.max(0, product.stock - saleData.quantity);
         await product.save();
+        
+        // If stock reaches 0, delete the product
+        if (product.stock === 0) {
+          await Product.findOneAndDelete({ _id: product._id, userId });
+        }
       }
     }
 
@@ -148,6 +153,11 @@ export const createBulkSales = async (req, res) => {
         if (product) {
           product.stock = Math.max(0, product.stock - processedSale.quantity);
           await product.save();
+          
+          // If stock reaches 0, delete the product
+          if (product.stock === 0) {
+            await Product.findOneAndDelete({ _id: product._id, userId });
+          }
         }
       }
 
