@@ -97,11 +97,7 @@ export const createSale = async (req, res) => {
       if (product) {
         product.stock = Math.max(0, product.stock - saleData.quantity);
         await product.save();
-        
-        // If stock reaches 0, delete the product
-        if (product.stock === 0) {
-          await Product.findOneAndDelete({ _id: product._id, userId });
-        }
+        // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
       }
     }
 
@@ -153,11 +149,7 @@ export const createBulkSales = async (req, res) => {
         if (product) {
           product.stock = Math.max(0, product.stock - processedSale.quantity);
           await product.save();
-          
-          // If stock reaches 0, delete the product
-          if (product.stock === 0) {
-            await Product.findOneAndDelete({ _id: product._id, userId });
-          }
+          // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
         }
       }
 

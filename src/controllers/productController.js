@@ -93,9 +93,27 @@ export const createProduct = async (req, res) => {
 
     const existingProduct = await Product.findOne(duplicateQuery);
     if (existingProduct) {
+      // If product is out of stock, return it so frontend can offer to update/restock
+      if (existingProduct.stock === 0) {
+        return res.status(409).json({ 
+          error: 'A product with the same name, category, and type already exists and is out of stock.',
+          duplicate: true,
+          outOfStock: true,
+          existingProduct: {
+            _id: existingProduct._id,
+            name: existingProduct.name,
+            category: existingProduct.category,
+            stock: existingProduct.stock,
+            costPrice: existingProduct.costPrice,
+            sellingPrice: existingProduct.sellingPrice,
+            productType: existingProduct.productType,
+          }
+        });
+      }
       return res.status(409).json({ 
         error: 'A product with the same name, category, and type already exists.',
-        duplicate: true
+        duplicate: true,
+        outOfStock: false
       });
     }
 
@@ -141,16 +159,7 @@ export const updateProduct = async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    // If stock reaches 0, delete the product
-    if (product.stock === 0) {
-      await Product.findOneAndDelete({ _id: product._id, userId });
-      return res.json({ 
-        message: 'Product updated successfully. Product deleted as stock reached 0.',
-        data: product,
-        deleted: true
-      });
-    }
-
+    // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
     res.json({ 
       message: 'Product updated successfully',
       data: product 
