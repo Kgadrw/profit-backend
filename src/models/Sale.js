@@ -37,7 +37,7 @@ const saleSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['cash', 'card', 'mobile', 'other'],
+    enum: ['cash', 'card', 'momo', 'airtel', 'transfer'],
     default: 'cash',
   },
   userId: {

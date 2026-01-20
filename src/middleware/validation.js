@@ -103,25 +103,37 @@ export const validateProduct = [
 export const validateSale = [
   body('product')
     .trim()
-    .notEmpty().withMessage('Product ID is required')
+    .notEmpty().withMessage('Product name is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Product name must be between 1 and 200 characters'),
+  
+  body('productId')
+    .optional()
     .isMongoId().withMessage('Invalid product ID format'),
   
   body('quantity')
     .notEmpty().withMessage('Quantity is required')
     .isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
   
-  body('sellingPrice')
-    .notEmpty().withMessage('Selling price is required')
-    .isFloat({ min: 0 }).withMessage('Selling price must be a non-negative number'),
+  body('revenue')
+    .notEmpty().withMessage('Revenue is required')
+    .isFloat({ min: 0 }).withMessage('Revenue must be a non-negative number'),
+  
+  body('cost')
+    .notEmpty().withMessage('Cost is required')
+    .isFloat({ min: 0 }).withMessage('Cost must be a non-negative number'),
+  
+  body('profit')
+    .notEmpty().withMessage('Profit is required')
+    .isFloat().withMessage('Profit must be a number'),
+  
+  body('date')
+    .optional()
+    .isISO8601().withMessage('Sale date must be a valid ISO 8601 date'),
   
   body('paymentMethod')
     .optional()
     .trim()
-    .isIn(['cash', 'momo', 'card', 'airtel', 'transfer']).withMessage('Invalid payment method'),
-  
-  body('saleDate')
-    .optional()
-    .isISO8601().withMessage('Sale date must be a valid ISO 8601 date'),
+    .isIn(['cash', 'card', 'momo', 'airtel', 'transfer']).withMessage('Invalid payment method'),
   
   handleValidationErrors
 ];
@@ -135,16 +147,28 @@ export const validateBulkSales = [
   
   body('sales.*.product')
     .trim()
-    .notEmpty().withMessage('Product ID is required for all sales')
+    .notEmpty().withMessage('Product name is required for all sales')
+    .isLength({ min: 1, max: 200 }).withMessage('Product name must be between 1 and 200 characters'),
+  
+  body('sales.*.productId')
+    .optional()
     .isMongoId().withMessage('Invalid product ID format'),
   
   body('sales.*.quantity')
     .notEmpty().withMessage('Quantity is required for all sales')
     .isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
   
-  body('sales.*.sellingPrice')
-    .notEmpty().withMessage('Selling price is required for all sales')
-    .isFloat({ min: 0 }).withMessage('Selling price must be a non-negative number'),
+  body('sales.*.revenue')
+    .notEmpty().withMessage('Revenue is required for all sales')
+    .isFloat({ min: 0 }).withMessage('Revenue must be a non-negative number'),
+  
+  body('sales.*.cost')
+    .notEmpty().withMessage('Cost is required for all sales')
+    .isFloat({ min: 0 }).withMessage('Cost must be a non-negative number'),
+  
+  body('sales.*.profit')
+    .notEmpty().withMessage('Profit is required for all sales')
+    .isFloat().withMessage('Profit must be a number'),
   
   handleValidationErrors
 ];
