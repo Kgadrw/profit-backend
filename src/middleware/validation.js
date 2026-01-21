@@ -56,8 +56,31 @@ export const validateLogin = [
   body('email')
     .optional()
     .trim()
-    .isEmail().withMessage('Please provide a valid email address')
-    .normalizeEmail(),
+    .custom((value) => {
+      // Allow "admin" as a special case for admin login (skip email validation)
+      if (value && value.toLowerCase().trim() === 'admin') {
+        return true;
+      }
+      // For other values, validate as email if provided
+      if (value && value.trim() !== '') {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(value)) {
+          throw new Error('Please provide a valid email address');
+        }
+      }
+      return true;
+    })
+    .customSanitizer((value) => {
+      // Don't normalize "admin", but normalize other emails
+      if (value && value.toLowerCase().trim() === 'admin') {
+        return value.trim().toLowerCase();
+      }
+      // For valid emails, normalize them
+      if (value && value.includes('@')) {
+        return value.trim().toLowerCase();
+      }
+      return value ? value.trim() : value;
+    }),
   
   handleValidationErrors
 ];
