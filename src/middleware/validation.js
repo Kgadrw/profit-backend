@@ -26,10 +26,15 @@ export const validateRegister = [
     .matches(/^[a-zA-Z\s'-]+$/).withMessage('Name can only contain letters, spaces, hyphens, and apostrophes'),
   
   body('email')
-    .optional()
     .trim()
+    .notEmpty().withMessage('Email is required')
     .isEmail().withMessage('Please provide a valid email address')
     .normalizeEmail(),
+  
+  body('phone')
+    .trim()
+    .notEmpty().withMessage('Phone number is required')
+    .isLength({ min: 10, max: 15 }).withMessage('Phone number must be between 10 and 15 characters'),
   
   body('pin')
     .trim()
@@ -196,13 +201,22 @@ export const validateBulkSales = [
   handleValidationErrors
 ];
 
-// MongoDB ObjectId validation
-export const validateObjectId = [
-  param('id')
-    .isMongoId().withMessage('Invalid ID format'),
+// MongoDB ObjectId validation - handles both 'id' and 'userId' parameter names
+export const validateObjectId = async (req, res, next) => {
+  const id = req.params.id || req.params.userId;
   
-  handleValidationErrors
-];
+  if (!id) {
+    return res.status(400).json({ error: 'ID parameter is required' });
+  }
+  
+  // Validate MongoDB ObjectId format (24 hex characters)
+  const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+  if (!objectIdRegex.test(id)) {
+    return res.status(400).json({ error: 'Invalid ID format' });
+  }
+  
+  next();
+};
 
 // Query parameter validation
 export const validateDateRange = [

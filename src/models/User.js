@@ -10,15 +10,21 @@ const userSchema = new mongoose.Schema({
   },
   email: {
     type: String,
+    required: [true, 'Email is required'],
     trim: true,
     lowercase: true,
-    sparse: true, // Allows multiple documents to have no email
+    unique: true,
     validate: {
       validator: function(v) {
-        return !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
       },
       message: 'Please enter a valid email address'
     }
+  },
+  phone: {
+    type: String,
+    required: [true, 'Phone number is required'],
+    trim: true,
   },
   businessName: {
     type: String,

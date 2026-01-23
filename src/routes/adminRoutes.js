@@ -8,6 +8,7 @@ import {
   getSystemHealth,
   getUserUsage,
   deleteUser,
+  testEmail,
 } from '../controllers/adminController.js';
 import { adminLimiter } from '../middleware/security.js';
 import { validateObjectId } from '../middleware/validation.js';
@@ -39,5 +40,8 @@ router.get('/health', getSystemHealth);
 
 // Delete user and all their data
 router.delete('/users/:userId', validateObjectId, deleteUser);
+
+// Test email configuration
+router.post('/test-email', testEmail);
 
 export default router;

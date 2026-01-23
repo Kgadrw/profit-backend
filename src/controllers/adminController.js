@@ -2,6 +2,7 @@
 import User from '../models/User.js';
 import Product from '../models/Product.js';
 import Sale from '../models/Sale.js';
+import { sendEmail } from '../utils/emailService.js';
 
 // Get system statistics
 export const getSystemStats = async (req, res) => {
@@ -351,5 +352,67 @@ export const getUserUsage = async (req, res) => {
   } catch (error) {
     console.error('Get user usage error:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch user usage statistics' });
+  }
+};
+
+// Test email configuration
+export const testEmail = async (req, res) => {
+  try {
+    const { to } = req.body;
+
+    // Validate email address
+    if (!to) {
+      return res.status(400).json({ error: 'Email address is required' });
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(to)) {
+      return res.status(400).json({ error: 'Invalid email address format' });
+    }
+
+    // Check if SMTP is configured
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASSWORD) {
+      return res.status(400).json({ 
+        error: 'Email service not configured',
+        message: 'Please configure SMTP_USER and SMTP_PASSWORD in your .env file'
+      });
+    }
+
+    // Send test email
+    const result = await sendEmail({
+      to,
+      subject: 'Test Email from Profit Pilot',
+      text: 'This is a test email from Profit Pilot. If you receive this, your email configuration is working correctly!',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #333;">Test Email from Profit Pilot</h2>
+          <p>This is a test email from Profit Pilot.</p>
+          <p>If you receive this, your email configuration is working correctly!</p>
+          <p style="margin-top: 30px; color: #666; font-size: 12px;">
+            This email was sent at ${new Date().toLocaleString()}
+          </p>
+        </div>
+      `,
+    });
+
+    if (result.success) {
+      res.json({
+        message: 'Test email sent successfully',
+        data: {
+          to,
+          messageId: result.messageId,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } else {
+      res.status(500).json({
+        error: 'Failed to send test email',
+        message: result.error || result.message,
+      });
+    }
+  } catch (error) {
+    console.error('Test email error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send test email' });
   }
 };

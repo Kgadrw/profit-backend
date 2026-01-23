@@ -6,6 +6,7 @@ import apiRoutes from './routes/index.js';
 import { connectDatabase } from './config/database.js';
 import { trackApiRequest } from './middleware/apiTracker.js';
 import { securityHeaders, sanitizeData, requestSizeLimit } from './middleware/security.js';
+import { startScheduler } from './utils/scheduler.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -94,4 +95,7 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📋 API endpoints available at http://localhost:${PORT}/api`);
+  
+  // Start schedule notification scheduler
+  startScheduler();
 });

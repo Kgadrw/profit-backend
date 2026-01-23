@@ -3,30 +3,28 @@ import User from '../models/User.js';
 
 export const register = async (req, res) => {
   try {
-    const { name, email, pin, businessName } = req.body;
+    const { name, email, phone, pin, businessName } = req.body;
 
     // Validation
-    if (!name || !pin) {
-      return res.status(400).json({ error: 'Name and PIN are required' });
+    if (!name || !pin || !email || !phone) {
+      return res.status(400).json({ error: 'Name, email, phone, and PIN are required' });
     }
 
     if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
       return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
     }
 
-    // Check if user already exists (by email if provided, or check if any user exists for PIN-based system)
-    // For this simple system, we'll allow multiple users but they must have unique emails if provided
-    if (email) {
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ error: 'User with this email already exists' });
-      }
+    // Check if user already exists by email
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
     }
 
     // Create new user
     const user = new User({
       name,
-      email: email || undefined,
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
       businessName: businessName || undefined,
       pin,
     });
@@ -51,8 +49,8 @@ export const login = async (req, res) => {
     const { pin, email } = req.body;
 
     // Validation
-    if (!pin) {
-      return res.status(400).json({ error: 'PIN is required' });
+    if (!pin || !email) {
+      return res.status(400).json({ error: 'Email and PIN are required' });
     }
 
     if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
@@ -66,6 +64,7 @@ export const login = async (req, res) => {
         user: {
           name: 'Admin',
           email: 'admin',
+          phone: '0000000000',
           businessName: 'System Administrator',
           role: 'admin',
         },
@@ -73,15 +72,8 @@ export const login = async (req, res) => {
       });
     }
 
-    // Find user by email if provided, otherwise get the first user (for PIN-only system)
-    let user;
-    if (email) {
-      user = await User.findOne({ email });
-    } else {
-      // For PIN-only system, get the first user (assuming single user per device)
-      // In production, you'd want to track which user is logged in per session
-      user = await User.findOne();
-    }
+    // Find user by email (email is now required)
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -126,7 +118,7 @@ export const getCurrentUser = async (req, res) => {
 // Update user information
 export const updateUser = async (req, res) => {
   try {
-    const { name, email, businessName } = req.body;
+    const { name, email, phone, businessName } = req.body;
 
     // Get the first user (for PIN-only system)
     // In production, you'd get user from JWT/session
@@ -140,15 +132,19 @@ export const updateUser = async (req, res) => {
       user.name = name.trim();
     }
     if (email !== undefined) {
-      if (email === '' || email === null) {
-        user.email = undefined;
-      } else {
-        // Validate email if provided
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-          return res.status(400).json({ error: 'Please enter a valid email address' });
-        }
-        user.email = email.trim().toLowerCase();
+      // Validate email
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ error: 'Please enter a valid email address' });
       }
+      // Check if email is already taken by another user
+      const existingUser = await User.findOne({ email: email.toLowerCase().trim(), _id: { $ne: user._id } });
+      if (existingUser) {
+        return res.status(400).json({ error: 'Email is already taken by another user' });
+      }
+      user.email = email.trim().toLowerCase();
+    }
+    if (phone !== undefined) {
+      user.phone = phone.trim();
     }
     if (businessName !== undefined) {
       user.businessName = businessName.trim() || '';
