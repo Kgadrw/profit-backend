@@ -2,6 +2,9 @@
 import User from '../models/User.js';
 import Product from '../models/Product.js';
 import Sale from '../models/Sale.js';
+import Schedule from '../models/Schedule.js';
+import Client from '../models/Client.js';
+import ServerStatus from '../models/ServerStatus.js';
 import { sendEmail } from '../utils/emailService.js';
 
 // Get system statistics
@@ -180,6 +183,17 @@ export const getSystemHealth = async (req, res) => {
       databaseStatus = 'disconnected';
     }
 
+    // Get server status history (last 3 months)
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    
+    const statusHistory = await ServerStatus.find({
+      timestamp: { $gte: threeMonthsAgo }
+    })
+      .sort({ timestamp: 1 })
+      .select('status timestamp')
+      .lean();
+
     const health = {
       database: databaseStatus,
       timestamp: new Date().toISOString(),
@@ -189,6 +203,7 @@ export const getSystemHealth = async (req, res) => {
         used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
       },
+      statusHistory: statusHistory || [],
     };
 
     res.json({ data: health });
@@ -352,6 +367,226 @@ export const getUserUsage = async (req, res) => {
   } catch (error) {
     console.error('Get user usage error:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch user usage statistics' });
+  }
+};
+
+// Get schedule statistics
+export const getScheduleStats = async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+
+    // Total schedules
+    const totalSchedules = await Schedule.countDocuments();
+    
+    // Schedules by status
+    const schedulesByStatus = await Schedule.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Schedules by frequency
+    const schedulesByFrequency = await Schedule.aggregate([
+      {
+        $group: {
+          _id: '$frequency',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Email notification statistics
+    const emailStats = await Schedule.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalWithNotifications: {
+            $sum: {
+              $cond: [{ $or: ['$notifyUser', '$notifyClient'] }, 1, 0],
+            },
+          },
+          totalEmailsSent: {
+            $sum: {
+              $cond: [{ $ne: ['$lastNotified', null] }, 1, 0],
+            },
+          },
+          schedulesWithUserNotification: {
+            $sum: {
+              $cond: ['$notifyUser', 1, 0],
+            },
+          },
+          schedulesWithClientNotification: {
+            $sum: {
+              $cond: ['$notifyClient', 1, 0],
+            },
+          },
+        },
+      },
+    ]);
+
+    // Recent schedules (last N days)
+    const recentSchedules = await Schedule.countDocuments({
+      createdAt: { $gte: startDate },
+    });
+
+    // Schedules by user
+    const schedulesByUser = await Schedule.aggregate([
+      {
+        $group: {
+          _id: '$userId',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' },
+          completed: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
+          },
+          emailsSent: {
+            $sum: { $cond: [{ $ne: ['$lastNotified', null] }, 1, 0] },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user',
+        },
+      },
+      {
+        $unwind: {
+          path: '$user',
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+      {
+        $project: {
+          userId: '$_id',
+          userName: { $ifNull: ['$user.name', 'Unknown'] },
+          userEmail: { $ifNull: ['$user.email', 'N/A'] },
+          count: 1,
+          totalAmount: 1,
+          completed: 1,
+          emailsSent: 1,
+        },
+      },
+      {
+        $sort: { count: -1 },
+      },
+      {
+        $limit: 10, // Top 10 users
+      },
+    ]);
+
+    // Schedule activity over time (last N days)
+    const scheduleActivity = await Schedule.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: '%Y-%m-%d',
+              date: '$createdAt',
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { _id: 1 },
+      },
+    ]);
+
+    // Email activity over time
+    const emailActivity = await Schedule.aggregate([
+      {
+        $match: {
+          lastNotified: { $gte: startDate, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: '%Y-%m-%d',
+              date: '$lastNotified',
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { _id: 1 },
+      },
+    ]);
+
+    // Upcoming schedules
+    const now = new Date();
+    const upcomingSchedules = await Schedule.countDocuments({
+      status: 'pending',
+      dueDate: { $gte: now },
+    });
+
+    // Overdue schedules
+    const overdueSchedules = await Schedule.countDocuments({
+      status: 'pending',
+      dueDate: { $lt: now },
+    });
+
+    // Total amount in schedules
+    const totalAmount = await Schedule.aggregate([
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' },
+        },
+      },
+    ]);
+
+    const emailStatsData = emailStats[0] || {
+      totalWithNotifications: 0,
+      totalEmailsSent: 0,
+      schedulesWithUserNotification: 0,
+      schedulesWithClientNotification: 0,
+    };
+
+    res.json({
+      data: {
+        totalSchedules,
+        schedulesByStatus: schedulesByStatus.reduce((acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        }, {}),
+        schedulesByFrequency: schedulesByFrequency.reduce((acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        }, {}),
+        emailStats: {
+          totalWithNotifications: emailStatsData.totalWithNotifications,
+          totalEmailsSent: emailStatsData.totalEmailsSent,
+          schedulesWithUserNotification: emailStatsData.schedulesWithUserNotification,
+          schedulesWithClientNotification: emailStatsData.schedulesWithClientNotification,
+        },
+        recentSchedules,
+        schedulesByUser,
+        scheduleActivity,
+        emailActivity,
+        upcomingSchedules,
+        overdueSchedules,
+        totalAmount: totalAmount[0]?.total || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Get schedule stats error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch schedule stats' });
   }
 };
 

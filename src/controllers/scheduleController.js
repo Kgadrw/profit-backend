@@ -141,7 +141,7 @@ export const createSchedule = async (req, res) => {
       clientId: clientId,
       dueDate: parsedDueDate, // Preserves full date and time
       frequency: frequency || 'once',
-      amount: amount ? parseFloat(amount) : undefined,
+      amount: amount !== undefined && amount !== null && amount !== '' ? Number(amount) : undefined,
       notifyUser: notifyUser !== undefined ? notifyUser : true,
       notifyClient: notifyClient !== undefined ? notifyClient : false,
       userNotificationMessage: userNotificationMessage ? userNotificationMessage.trim() : undefined,
@@ -211,7 +211,7 @@ export const updateSchedule = async (req, res) => {
       schedule.dueDate = parsedDueDate; // Preserves full date and time
     }
     if (frequency !== undefined) schedule.frequency = frequency;
-    if (amount !== undefined) schedule.amount = amount ? parseFloat(amount) : undefined;
+    if (amount !== undefined) schedule.amount = amount !== null && amount !== '' ? Number(amount) : undefined;
     if (status !== undefined) schedule.status = status;
     if (notifyUser !== undefined) schedule.notifyUser = notifyUser;
     if (notifyClient !== undefined) schedule.notifyClient = notifyClient;

@@ -35,10 +35,11 @@ export const authLimiter = createRateLimiter(
   'Too many login attempts, please try again later.'
 );
 
-// Strict rate limiter for admin endpoints (20 requests per minute)
+// Rate limiter for admin endpoints (100 requests per minute)
+// Increased limit to accommodate dashboard which makes multiple parallel requests
 export const adminLimiter = createRateLimiter(
   60 * 1000, // 1 minute
-  20,
+  100,
   'Too many admin requests, please try again later.'
 );
 

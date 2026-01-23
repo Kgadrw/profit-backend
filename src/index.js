@@ -7,6 +7,7 @@ import { connectDatabase } from './config/database.js';
 import { trackApiRequest } from './middleware/apiTracker.js';
 import { securityHeaders, sanitizeData, requestSizeLimit } from './middleware/security.js';
 import { startScheduler } from './utils/scheduler.js';
+import ServerStatus from './models/ServerStatus.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,8 +15,31 @@ const PORT = process.env.PORT || 3000;
 // Track server start time for uptime calculation
 const serverStartTime = Date.now();
 
+// Function to log server status (with error handling to prevent crashes)
+const logServerStatus = async (status) => {
+  try {
+    // Only log if mongoose is connected
+    const mongoose = await import('mongoose');
+    if (mongoose.default.connection.readyState === 1) {
+      await ServerStatus.create({
+        status,
+        timestamp: new Date(),
+      });
+    }
+  } catch (error) {
+    // Silently fail - don't crash the server if status logging fails
+    console.error('Error logging server status (non-critical):', error.message);
+  }
+};
+
 // Connect to MongoDB
-connectDatabase().catch((error) => {
+connectDatabase().then(async () => {
+  // Log server startup (with delay to ensure DB is ready)
+  setTimeout(async () => {
+    await logServerStatus('up');
+    console.log('✅ Server status tracking initialized');
+  }, 1000);
+}).catch((error) => {
   console.error('Failed to connect to database:', error);
   process.exit(1);
 });
@@ -91,11 +115,47 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Periodic server status logging (every 5 minutes)
+let statusCheckInterval;
+const startStatusTracking = async () => {
+  // Wait a bit for DB to be fully ready
+  setTimeout(() => {
+    // Log status every 5 minutes
+    statusCheckInterval = setInterval(async () => {
+      await logServerStatus('up');
+    }, 5 * 60 * 1000); // 5 minutes
+  }, 2000);
+};
+
+// Graceful shutdown - log server down
+const gracefulShutdown = async () => {
+  console.log('🛑 Server shutting down...');
+  if (statusCheckInterval) {
+    clearInterval(statusCheckInterval);
+  }
+  // Try to log shutdown, but don't wait if DB is disconnected
+  try {
+    await Promise.race([
+      logServerStatus('down'),
+      new Promise(resolve => setTimeout(resolve, 1000)) // Timeout after 1 second
+    ]);
+  } catch (error) {
+    // Ignore errors during shutdown
+  }
+  process.exit(0);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📋 API endpoints available at http://localhost:${PORT}/api`);
   
   // Start schedule notification scheduler
   startScheduler();
+  
+  // Start status tracking
+  await startStatusTracking();
 });

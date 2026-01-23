@@ -7,6 +7,7 @@ import {
   getApiStats,
   getSystemHealth,
   getUserUsage,
+  getScheduleStats,
   deleteUser,
   testEmail,
 } from '../controllers/adminController.js';
@@ -37,6 +38,9 @@ router.get('/api-stats', getApiStats);
 
 // Get system health
 router.get('/health', getSystemHealth);
+
+// Get schedule statistics
+router.get('/schedule-stats', getScheduleStats);
 
 // Delete user and all their data
 router.delete('/users/:userId', validateObjectId, deleteUser);
