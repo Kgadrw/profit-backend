@@ -201,3 +201,54 @@ export const changePin = async (req, res) => {
     res.status(500).json({ error: error.message || 'Failed to change PIN' });
   }
 };
+
+// Delete user account and all associated data
+export const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id; // From authenticateUser middleware
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Prevent deleting admin user
+    if (user.email === 'admin') {
+      return res.status(403).json({ error: 'Cannot delete admin user' });
+    }
+
+    // Import models
+    const Product = (await import('../models/Product.js')).default;
+    const Sale = (await import('../models/Sale.js')).default;
+    const Client = (await import('../models/Client.js')).default;
+    const Schedule = (await import('../models/Schedule.js')).default;
+
+    // Delete all associated data
+    const deletedProducts = await Product.deleteMany({ userId });
+    const deletedSales = await Sale.deleteMany({ userId });
+    const deletedClients = await Client.deleteMany({ userId });
+    const deletedSchedules = await Schedule.deleteMany({ userId });
+
+    // Delete the user
+    await User.findByIdAndDelete(userId);
+
+    res.json({
+      message: 'Account and all associated data deleted successfully',
+      data: {
+        userId,
+        deletedProducts: deletedProducts.deletedCount,
+        deletedSales: deletedSales.deletedCount,
+        deletedClients: deletedClients.deletedCount,
+        deletedSchedules: deletedSchedules.deletedCount,
+      },
+    });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete account' });
+  }
+};

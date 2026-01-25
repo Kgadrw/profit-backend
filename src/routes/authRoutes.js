@@ -1,6 +1,6 @@
 // Authentication Routes
 import express from 'express';
-import { register, login, getCurrentUser, updateUser, changePin } from '../controllers/authController.js';
+import { register, login, getCurrentUser, updateUser, changePin, deleteAccount } from '../controllers/authController.js';
 import { authLimiter } from '../middleware/security.js';
 import { validateRegister, validateLogin } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
@@ -21,5 +21,8 @@ router.put('/update', authenticateUser, updateUser);
 
 // Change PIN (requires authentication)
 router.put('/change-pin', authenticateUser, changePin);
+
+// Delete account (requires authentication)
+router.delete('/delete-account', authenticateUser, deleteAccount);
 
 export default router;
