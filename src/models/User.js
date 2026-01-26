@@ -29,7 +29,7 @@ const userSchema = new mongoose.Schema({
   businessName: {
     type: String,
     trim: true,
-    default: '',
+    default: undefined, // Leave blank - user sets it in settings
   },
   pin: {
     type: String,

@@ -22,12 +22,12 @@ export const register = async (req, res) => {
       return res.status(400).json({ error: 'User with this email already exists' });
     }
 
-    // Create new user
+    // Create new user (businessName is always left blank - user can set it later in settings)
     const user = new User({
       name,
       email: email.toLowerCase().trim(),
       phone: phone.trim(),
-      businessName: businessName || undefined,
+      businessName: undefined, // Always leave blank - user sets it in settings
       pin,
     });
 
@@ -149,7 +149,8 @@ export const updateUser = async (req, res) => {
       user.phone = phone.trim();
     }
     if (businessName !== undefined) {
-      user.businessName = businessName.trim() || '';
+      // Allow user to set business name or leave it blank (empty string becomes undefined)
+      user.businessName = businessName.trim() || undefined;
     }
 
     await user.save();
