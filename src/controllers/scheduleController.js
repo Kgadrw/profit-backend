@@ -124,10 +124,10 @@ export const createSchedule = async (req, res) => {
     }
 
     // Validate clientId exists
-    const client = await Client.findOne({ _id: clientId, userId });
-    if (!client) {
-      return res.status(404).json({ error: 'Client not found' });
-    }
+      const client = await Client.findOne({ _id: clientId, userId });
+      if (!client) {
+        return res.status(404).json({ error: 'Client not found' });
+      }
 
     // Ensure dueDate preserves time component
     const parsedDueDate = new Date(dueDate);
@@ -225,11 +225,11 @@ export const updateSchedule = async (req, res) => {
       if (!clientId || !clientId.trim()) {
         return res.status(400).json({ error: 'A client must be assigned to this schedule. Cannot remove client assignment.' });
       }
-      const client = await Client.findOne({ _id: clientId, userId });
-      if (!client) {
-        return res.status(404).json({ error: 'Client not found' });
-      }
-      schedule.clientId = clientId;
+        const client = await Client.findOne({ _id: clientId, userId });
+        if (!client) {
+          return res.status(404).json({ error: 'Client not found' });
+        }
+        schedule.clientId = clientId;
     }
 
     // Recalculate next due date if frequency or due date changed
