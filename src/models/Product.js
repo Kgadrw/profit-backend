@@ -45,6 +45,13 @@ const productSchema = new mongoose.Schema({
     min: [0, 'Minimum stock cannot be negative'],
     default: 0,
   },
+  // Optional manufacturing and expiry dates
+  manufacturedDate: {
+    type: Date,
+  },
+  expiryDate: {
+    type: Date,
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
