@@ -32,6 +32,11 @@ const logServerStatus = async (status) => {
   }
 };
 
+// When running behind a reverse proxy (e.g. Render, Nginx),
+// trust the first proxy so Express and express-rate-limit
+// can correctly use the X-Forwarded-* headers for IP detection.
+app.set('trust proxy', 1);
+
 // Connect to MongoDB
 connectDatabase().then(async () => {
   // Log server startup (with delay to ensure DB is ready)
