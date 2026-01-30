@@ -41,6 +41,11 @@ const productSchema = new mongoose.Schema({
     enum: ['perQuantity', 'perPackage'],
     default: 'perQuantity',
   },
+  costPriceType: {
+    type: String,
+    enum: ['perQuantity', 'perPackage'],
+    default: 'perQuantity',
+  },
   productType: {
     type: String,
     trim: true,
