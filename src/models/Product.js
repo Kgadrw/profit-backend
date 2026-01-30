@@ -36,6 +36,11 @@ const productSchema = new mongoose.Schema({
     type: Number,
     min: [1, 'Package quantity must be at least 1'],
   },
+  priceType: {
+    type: String,
+    enum: ['perQuantity', 'perPackage'],
+    default: 'perQuantity',
+  },
   productType: {
     type: String,
     trim: true,
