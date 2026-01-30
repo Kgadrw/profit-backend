@@ -7,6 +7,42 @@ import Client from '../models/Client.js';
 import ServerStatus from '../models/ServerStatus.js';
 import { sendEmail } from '../utils/emailService.js';
 
+// Helper function to generate email header as table rows for admin emails
+const generateEmailHeaderTable = (senderUser) => {
+  const companyName = senderUser?.businessName || senderUser?.name || 'Profit Pilot';
+  const companyLogo = process.env.COMPANY_LOGO_URL || 'https://trippo.rw/logo.png';
+  const senderName = senderUser?.name || 'Admin';
+  const senderEmail = senderUser?.email || '';
+
+  return `
+    <tr>
+      <td style="background-color: #ffffff; padding: 15px 20px; text-align: left; border-bottom: 1px solid #e2e8f0;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <img 
+            src="${companyLogo}" 
+            alt="Logo" 
+            width="40" 
+            height="40"
+            style="width: 40px; height: 40px; display: block; border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; vertical-align: middle;" 
+          />
+          <h1 style="color: #1e293b; margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.3px; line-height: 40px; vertical-align: middle;">${companyName}</h1>
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td style="background-color: #f8fafc; padding: 12px 20px; border-bottom: 1px solid #e2e8f0;">
+        <div style="background-color: #ffffff; padding: 10px 12px;">
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <span style="color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Message From:</span>
+            <span style="color: #1e293b; font-size: 13px; font-weight: 600;">${senderName}</span>
+            ${senderEmail ? `<span style="color: #64748b; font-size: 12px; margin-left: 4px;">${senderEmail}</span>` : ''}
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+};
+
 // Get system statistics
 export const getSystemStats = async (req, res) => {
   try {
@@ -92,6 +128,7 @@ export const getAllUsers = async (req, res) => {
 
         return {
           ...user,
+          phone: user.phone || null, // Explicitly include phone number
           productCount,
           saleCount,
           totalRevenue: salesStats.totalRevenue || 0,
@@ -587,6 +624,216 @@ export const getScheduleStats = async (req, res) => {
   } catch (error) {
     console.error('Get schedule stats error:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch schedule stats' });
+  }
+};
+
+// Send email to single user
+export const sendEmailToUser = async (req, res) => {
+  try {
+    const { userId, subject, message, html } = req.body;
+
+    // Validate required fields
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message are required' });
+    }
+
+    // Find user
+    const user = await User.findById(userId).select('-pin');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.email) {
+      return res.status(400).json({ error: 'User does not have an email address' });
+    }
+
+    // Get admin user (sender) from request
+    const adminUserId = req.headers['x-user-id'];
+    const adminUser = await User.findById(adminUserId).select('-pin');
+
+    // Generate HTML if not provided
+    const emailHtml = html || `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
+        <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
+          <tr>
+            <td style="padding: 40px 20px;">
+              <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                ${generateEmailHeaderTable(adminUser || user)}
+                <tr>
+                  <td style="padding: 30px;">
+                    <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">${subject}</h2>
+                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
+                    <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; margin: 20px 0;">
+                      <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap;">${personalizedMessage}</p>
+                    </div>
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                      <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
+                      <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">${adminUser?.businessName || adminUser?.name || 'Profit Pilot Admin'}</p>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    // Send email
+    const result = await sendEmail({
+      to: user.email,
+      subject,
+      text: message,
+      html: emailHtml,
+      fromName: adminUser?.businessName || adminUser?.name || 'Profit Pilot Admin',
+      fromEmail: adminUser?.email || process.env.SMTP_USER,
+    });
+
+    if (result.success) {
+      res.json({
+        message: 'Email sent successfully',
+        data: {
+          userId: user._id,
+          userEmail: user.email,
+          userName: user.name,
+          messageId: result.messageId,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } else {
+      res.status(500).json({
+        error: 'Failed to send email',
+        message: result.error || result.message,
+      });
+    }
+  } catch (error) {
+    console.error('Send email to user error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send email' });
+  }
+};
+
+// Send email to multiple users (bulk)
+export const sendBulkEmail = async (req, res) => {
+  try {
+    const { userIds, subject, message, html } = req.body;
+
+    // Validate required fields
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'User IDs array is required' });
+    }
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message are required' });
+    }
+
+    // Get admin user (sender) from request
+    const adminUserId = req.headers['x-user-id'];
+    const adminUser = await User.findById(adminUserId).select('-pin');
+
+    // Find all users
+    const users = await User.find({ _id: { $in: userIds } }).select('-pin');
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'No users found' });
+    }
+
+    // Filter users with email addresses
+    const usersWithEmail = users.filter(u => u.email);
+
+    if (usersWithEmail.length === 0) {
+      return res.status(400).json({ error: 'None of the selected users have email addresses' });
+    }
+
+    // Send emails to all users
+    const results = await Promise.allSettled(
+      usersWithEmail.map(async (user) => {
+        // Personalize message with user name
+        let personalizedMessage = message;
+        if (personalizedMessage.includes("{name}")) {
+          personalizedMessage = personalizedMessage.replace(/{name}/g, user.name);
+        }
+
+        // Generate personalized HTML if not provided
+        const emailHtml = html || `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          </head>
+          <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
+            <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
+              <tr>
+                <td style="padding: 40px 20px;">
+                  <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                    ${generateEmailHeaderTable(adminUser)}
+                    <tr>
+                      <td style="padding: 30px;">
+                        <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">${subject}</h2>
+                        <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
+                        <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; margin: 20px 0;">
+                          <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap;">${personalizedMessage}</p>
+                        </div>
+                        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                          <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
+                          <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">${adminUser?.businessName || adminUser?.name || 'Profit Pilot Admin'}</p>
+                        </div>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        `;
+
+        const result = await sendEmail({
+          to: user.email,
+          subject,
+          text: message,
+          html: emailHtml,
+          fromName: adminUser?.businessName || adminUser?.name || 'Profit Pilot Admin',
+          fromEmail: adminUser?.email || process.env.SMTP_USER,
+        });
+
+        return {
+          userId: user._id,
+          userEmail: user.email,
+          userName: user.name,
+          success: result.success,
+          messageId: result.messageId,
+          error: result.error || result.message,
+        };
+      })
+    );
+
+    // Process results
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success);
+    const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success));
+
+    res.json({
+      message: `Email sent to ${successful.length} of ${usersWithEmail.length} users`,
+      data: {
+        total: usersWithEmail.length,
+        successful: successful.length,
+        failed: failed.length,
+        results: results.map(r => 
+          r.status === 'fulfilled' ? r.value : { error: r.reason?.message || 'Unknown error' }
+        ),
+      },
+    });
+  } catch (error) {
+    console.error('Send bulk email error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send bulk email' });
   }
 };
 

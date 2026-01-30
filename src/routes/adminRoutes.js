@@ -10,6 +10,8 @@ import {
   getScheduleStats,
   deleteUser,
   testEmail,
+  sendEmailToUser,
+  sendBulkEmail,
 } from '../controllers/adminController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateObjectId } from '../middleware/validation.js';
@@ -47,5 +49,11 @@ router.delete('/users/:userId', validateObjectId, deleteUser);
 
 // Test email configuration
 router.post('/test-email', testEmail);
+
+// Send email to single user
+router.post('/send-email', sendEmailToUser);
+
+// Send bulk email to multiple users
+router.post('/send-bulk-email', sendBulkEmail);
 
 export default router;

@@ -79,7 +79,7 @@ const createTransporter = () => {
 };
 
 // Generate email header with company logo, name, and sender info
-const generateEmailHeader = (senderUser) => {
+export const generateEmailHeader = (senderUser) => {
   const companyName = senderUser.businessName || senderUser.name || 'Trippo';
   // Use publicly accessible logo URL - can be overridden with COMPANY_LOGO_URL env variable
   const companyLogo = process.env.COMPANY_LOGO_URL || 'https://trippo.rw/logo.png';
