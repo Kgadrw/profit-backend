@@ -7,7 +7,7 @@ import {
   updateProduct,
   deleteProduct,
 } from '../controllers/productController.js';
-import { apiLimiter } from '../middleware/security.js';
+import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateProduct, validateObjectId } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
 
@@ -15,7 +15,7 @@ const router = express.Router();
 
 // All product routes require authentication and rate limiting
 router.use(authenticateUser);
-router.use(apiLimiter);
+router.use(rateLimiters.products);
 
 router.get('/', getProducts);
 router.get('/:id', validateObjectId, getProduct);

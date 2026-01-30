@@ -11,7 +11,7 @@ import {
   deleteUser,
   testEmail,
 } from '../controllers/adminController.js';
-import { adminLimiter } from '../middleware/security.js';
+import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateObjectId } from '../middleware/validation.js';
 import { authenticateAdmin } from '../middleware/auth.js';
 
@@ -19,7 +19,7 @@ const router = express.Router();
 
 // All admin routes require admin authentication and strict rate limiting
 router.use(authenticateAdmin);
-router.use(adminLimiter);
+router.use(rateLimiters.admin);
 
 // Get system statistics
 router.get('/stats', getSystemStats);
