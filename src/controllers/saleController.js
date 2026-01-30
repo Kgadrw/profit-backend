@@ -175,6 +175,12 @@ export const updateSale = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
+    // Find the existing sale first to get old values
+    const oldSale = await Sale.findOne({ _id: req.params.id, userId });
+    if (!oldSale) {
+      return res.status(404).json({ error: 'Sale not found' });
+    }
+
     const updateData = { ...req.body };
     
     // Convert string numbers to numbers
@@ -183,6 +189,33 @@ export const updateSale = async (req, res) => {
     if (updateData.cost) updateData.cost = parseFloat(updateData.cost);
     if (updateData.profit) updateData.profit = parseFloat(updateData.profit);
     if (updateData.date) updateData.date = new Date(updateData.date);
+
+    // Handle stock updates if quantity or productId changed
+    const quantityChanged = updateData.quantity !== undefined && updateData.quantity !== oldSale.quantity;
+    const productIdChanged = updateData.productId !== undefined && 
+                             updateData.productId.toString() !== oldSale.productId?.toString();
+
+    if (quantityChanged || productIdChanged) {
+      // Restore stock from old sale
+      if (oldSale.productId) {
+        const oldProduct = await Product.findOne({ _id: oldSale.productId, userId });
+        if (oldProduct) {
+          oldProduct.stock = oldProduct.stock + oldSale.quantity;
+          await oldProduct.save();
+        }
+      }
+
+      // Reduce stock for new/updated sale
+      const newProductId = updateData.productId || oldSale.productId;
+      if (newProductId) {
+        const newProduct = await Product.findOne({ _id: newProductId, userId });
+        if (newProduct) {
+          const newQuantity = updateData.quantity !== undefined ? updateData.quantity : oldSale.quantity;
+          newProduct.stock = Math.max(0, newProduct.stock - newQuantity);
+          await newProduct.save();
+        }
+      }
+    }
 
     const sale = await Sale.findOneAndUpdate(
       { _id: req.params.id, userId },
@@ -214,10 +247,23 @@ export const deleteSale = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
-    const sale = await Sale.findOneAndDelete({ _id: req.params.id, userId });
+    // Find the sale first to get productId and quantity before deleting
+    const sale = await Sale.findOne({ _id: req.params.id, userId });
     if (!sale) {
       return res.status(404).json({ error: 'Sale not found' });
     }
+
+    // Restore product stock if productId is provided
+    if (sale.productId) {
+      const product = await Product.findOne({ _id: sale.productId, userId });
+      if (product) {
+        product.stock = product.stock + sale.quantity;
+        await product.save();
+      }
+    }
+
+    // Now delete the sale
+    await Sale.findByIdAndDelete(req.params.id);
 
     res.json({ 
       message: 'Sale deleted successfully',
@@ -236,6 +282,34 @@ export const deleteAllSales = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
+    // Find all sales first to restore stock
+    const allSales = await Sale.find({ userId });
+    
+    // Group sales by productId and sum quantities to restore stock efficiently
+    const stockRestorations = new Map();
+    for (const sale of allSales) {
+      if (sale.productId) {
+        const productId = sale.productId.toString();
+        const currentQuantity = stockRestorations.get(productId) || 0;
+        stockRestorations.set(productId, currentQuantity + sale.quantity);
+      }
+    }
+
+    // Restore stock for each product
+    for (const [productId, totalQuantity] of stockRestorations.entries()) {
+      try {
+        const product = await Product.findOne({ _id: productId, userId });
+        if (product) {
+          product.stock = product.stock + totalQuantity;
+          await product.save();
+        }
+      } catch (error) {
+        console.error(`Error restoring stock for product ${productId}:`, error);
+        // Continue with other products even if one fails
+      }
+    }
+
+    // Now delete all sales
     const result = await Sale.deleteMany({ userId });
     
     res.json({ 

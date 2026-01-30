@@ -25,17 +25,25 @@ let useRedis = false;
 
 // Custom store for rate limiting (supports both Redis and memory)
 class CustomStore {
-  constructor() {
+  constructor(prefix = 'rate-limit') {
+    this.prefix = prefix; // Unique prefix for this store instance
     this.memoryStore = new Map();
   }
 
+  // Add prefix to key to ensure uniqueness
+  _getKey(key) {
+    return `${this.prefix}:${key}`;
+  }
+
   async increment(key) {
+    const prefixedKey = this._getKey(key);
+    
     if (useRedis && redisClient) {
       try {
-        const count = await redisClient.incr(key);
+        const count = await redisClient.incr(prefixedKey);
         // Set expiration if this is the first request
         if (count === 1) {
-          await redisClient.expire(key, 900); // 15 minutes
+          await redisClient.expire(prefixedKey, 900); // 15 minutes
         }
         return { totalHits: count, resetTime: new Date(Date.now() + 900000) };
       } catch (error) {
@@ -46,7 +54,7 @@ class CustomStore {
     
     // Fallback to memory store
     const now = Date.now();
-    const entry = this.memoryStore.get(key) || { count: 0, resetTime: now + 900000 };
+    const entry = this.memoryStore.get(prefixedKey) || { count: 0, resetTime: now + 900000 };
     
     if (now > entry.resetTime) {
       entry.count = 0;
@@ -54,49 +62,50 @@ class CustomStore {
     }
     
     entry.count++;
-    this.memoryStore.set(key, entry);
+    this.memoryStore.set(prefixedKey, entry);
     
     return { totalHits: entry.count, resetTime: new Date(entry.resetTime) };
   }
 
   async decrement(key) {
+    const prefixedKey = this._getKey(key);
+    
     if (useRedis && redisClient) {
       try {
-        await redisClient.decr(key);
+        await redisClient.decr(prefixedKey);
         return;
       } catch (error) {
         // Fallback to memory
       }
     }
     
-    const entry = this.memoryStore.get(key);
+    const entry = this.memoryStore.get(prefixedKey);
     if (entry && entry.count > 0) {
       entry.count--;
-      this.memoryStore.set(key, entry);
+      this.memoryStore.set(prefixedKey, entry);
     }
   }
 
   async resetKey(key) {
+    const prefixedKey = this._getKey(key);
+    
     if (useRedis && redisClient) {
       try {
-        await redisClient.del(key);
+        await redisClient.del(prefixedKey);
         return;
       } catch (error) {
         // Fallback to memory
       }
     }
     
-    this.memoryStore.delete(key);
+    this.memoryStore.delete(prefixedKey);
   }
 
   async shutdown() {
-    if (redisClient) {
-      await redisClient.quit();
-    }
+    // Note: We don't close Redis here as it might be shared
+    // Redis connection should be managed at a higher level
   }
 }
-
-const customStore = new CustomStore();
 
 // Generate rate limit key based on user ID or IP
 const generateKey = (req) => {
@@ -118,13 +127,16 @@ export const createSmartRateLimiter = (options) => {
     route = 'general'
   } = options;
 
+  // ✅ Create a unique store instance for each rate limiter with a unique prefix
+  const store = new CustomStore(`rate-limit-${route}`);
+
   return rateLimit({
     windowMs,
     max,
     message,
     standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
     legacyHeaders: false, // Disable `X-RateLimit-*` headers
-    store: customStore,
+    store: store, // Each limiter gets its own store instance
     keyGenerator: generateKey,
     skip: (req) => {
       // Skip rate limiting for health checks
@@ -201,11 +213,23 @@ export const rateLimiters = {
   })
 };
 
-// Graceful shutdown
+// Graceful shutdown - close Redis connection if it exists
 process.on('SIGTERM', async () => {
-  await customStore.shutdown();
+  if (redisClient) {
+    try {
+      await redisClient.quit();
+    } catch (error) {
+      console.error('Error closing Redis connection:', error);
+    }
+  }
 });
 
 process.on('SIGINT', async () => {
-  await customStore.shutdown();
+  if (redisClient) {
+    try {
+      await redisClient.quit();
+    } catch (error) {
+      console.error('Error closing Redis connection:', error);
+    }
+  }
 });
