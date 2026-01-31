@@ -667,6 +667,12 @@ export const sendEmailToUser = async (req, res) => {
       adminUser = await User.findById(adminUserId).select('-pin');
     }
 
+    // Personalize message with user name
+    let personalizedMessage = message;
+    if (personalizedMessage.includes("{name}")) {
+      personalizedMessage = personalizedMessage.replace(/{name}/g, user.name);
+    }
+
     // Generate HTML if not provided
     const emailHtml = html || `
       <!DOCTYPE html>
