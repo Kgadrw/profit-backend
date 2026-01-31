@@ -6,6 +6,7 @@ import Schedule from '../models/Schedule.js';
 import Client from '../models/Client.js';
 import ServerStatus from '../models/ServerStatus.js';
 import { sendEmail } from '../utils/emailService.js';
+import mongoose from 'mongoose';
 
 // Helper function to generate email header as table rows for admin emails
 const generateEmailHeaderTable = (senderUser) => {
@@ -652,7 +653,19 @@ export const sendEmailToUser = async (req, res) => {
 
     // Get admin user (sender) from request
     const adminUserId = req.headers['x-user-id'];
-    const adminUser = await User.findById(adminUserId).select('-pin');
+    let adminUser = null;
+    
+    // Handle admin user - if userId is "admin", create a default admin user object
+    if (adminUserId === 'admin') {
+      adminUser = {
+        name: 'System Administrator',
+        businessName: 'System Administrator',
+        email: process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'admin@profitpilot.com',
+      };
+    } else if (adminUserId && mongoose.Types.ObjectId.isValid(adminUserId)) {
+      // Only try to find user if it's a valid ObjectId
+      adminUser = await User.findById(adminUserId).select('-pin');
+    }
 
     // Generate HTML if not provided
     const emailHtml = html || `
@@ -737,7 +750,19 @@ export const sendBulkEmail = async (req, res) => {
 
     // Get admin user (sender) from request
     const adminUserId = req.headers['x-user-id'];
-    const adminUser = await User.findById(adminUserId).select('-pin');
+    let adminUser = null;
+    
+    // Handle admin user - if userId is "admin", create a default admin user object
+    if (adminUserId === 'admin') {
+      adminUser = {
+        name: 'System Administrator',
+        businessName: 'System Administrator',
+        email: process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'admin@profitpilot.com',
+      };
+    } else if (adminUserId && mongoose.Types.ObjectId.isValid(adminUserId)) {
+      // Only try to find user if it's a valid ObjectId
+      adminUser = await User.findById(adminUserId).select('-pin');
+    }
 
     // Find all users
     const users = await User.find({ _id: { $in: userIds } }).select('-pin');
