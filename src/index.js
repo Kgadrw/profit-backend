@@ -1,15 +1,18 @@
 // Backend API Entry Point
 import 'dotenv/config';
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
 import apiRoutes from './routes/index.js';
 import { connectDatabase } from './config/database.js';
 import { trackApiRequest } from './middleware/apiTracker.js';
 import { securityHeaders, sanitizeData, requestSizeLimit } from './middleware/security.js';
 import { startScheduler } from './utils/scheduler.js';
+import { initializeWebSocket } from './utils/websocket.js';
 import ServerStatus from './models/ServerStatus.js';
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 
 // Track server start time for uptime calculation
@@ -153,10 +156,14 @@ const gracefulShutdown = async () => {
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
+// Initialize WebSocket server
+initializeWebSocket(server);
+
 // Start server
-app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📋 API endpoints available at http://localhost:${PORT}/api`);
+  console.log(`🔌 WebSocket server available at ws://localhost:${PORT}/ws`);
   
   // Start schedule notification scheduler
   startScheduler();

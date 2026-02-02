@@ -21,7 +21,8 @@
     "hpp": "^0.2.3",
     "mongoose": "^8.0.3",
     "node-cron": "^4.2.1",
-    "nodemailer": "^7.0.12"
+    "nodemailer": "^7.0.12",
+    "ws": "^8.19.0"
   },
   "keywords": [
     "profit-pilot",

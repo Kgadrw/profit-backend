@@ -1,5 +1,6 @@
 // Product Controller
 import Product from '../models/Product.js';
+import { emitToUser } from '../utils/websocket.js';
 
 // Helper to get userId from request
 const getUserId = async (req) => {
@@ -120,6 +121,9 @@ export const createProduct = async (req, res) => {
     const product = new Product(productData);
     await product.save();
 
+    // Emit WebSocket event for real-time update
+    emitToUser(userId, 'product:created', product.toObject());
+
     res.status(201).json({ 
       message: 'Product created successfully',
       data: product 
@@ -159,6 +163,9 @@ export const updateProduct = async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
+    // Emit WebSocket event for real-time update
+    emitToUser(userId, 'product:updated', product.toObject());
+
     // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
     res.json({ 
       message: 'Product updated successfully',
@@ -184,6 +191,9 @@ export const deleteProduct = async (req, res) => {
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
+
+    // Emit WebSocket event for real-time update
+    emitToUser(userId, 'product:deleted', { _id: product._id });
 
     res.json({ 
       message: 'Product deleted successfully',
