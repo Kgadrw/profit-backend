@@ -5,7 +5,7 @@ import { sendEmail } from '../utils/emailService.js';
 
 export const register = async (req, res) => {
   try {
-    const { name, email, phone, pin, businessName } = req.body;
+    const { name, email, phone, pin, businessName, role, salonOwnerId, barberId } = req.body;
 
     // Validation
     if (!name || !pin || !email || !phone) {
@@ -16,22 +16,65 @@ export const register = async (req, res) => {
       return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
     }
 
+    // Validate role
+    const userRole = role || 'salon_owner';
+    if (!['salon_owner', 'barber'].includes(userRole)) {
+      return res.status(400).json({ error: 'Invalid role. Must be salon_owner or barber' });
+    }
+
+    // For barber registration, validate salonOwnerId and barberId
+    if (userRole === 'barber') {
+      if (!salonOwnerId) {
+        return res.status(400).json({ error: 'Salon owner ID is required for barber registration' });
+      }
+      if (!barberId) {
+        return res.status(400).json({ error: 'Barber ID is required for barber registration' });
+      }
+      
+      // Verify salon owner exists
+      const salonOwner = await User.findById(salonOwnerId);
+      if (!salonOwner || salonOwner.role !== 'salon_owner') {
+        return res.status(400).json({ error: 'Invalid salon owner' });
+      }
+
+      // Verify barber record exists and belongs to salon owner
+      const Barber = (await import('../models/Barber.js')).default;
+      const barber = await Barber.findOne({ _id: barberId, userId: salonOwnerId });
+      if (!barber) {
+        return res.status(400).json({ error: 'Invalid barber record' });
+      }
+    }
+
     // Check if user already exists by email
     const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
     if (existingUser) {
       return res.status(400).json({ error: 'User with this email already exists' });
     }
 
-    // Create new user (businessName is always left blank - user can set it later in settings)
-    const user = new User({
+    // Create new user
+    const userData = {
       name,
       email: email.toLowerCase().trim(),
       phone: phone.trim(),
-      businessName: undefined, // Always leave blank - user sets it in settings
+      businessName: userRole === 'salon_owner' ? undefined : undefined, // Always leave blank - user sets it in settings
+      role: userRole,
       pin,
-    });
+    };
 
+    // Add barber-specific fields
+    if (userRole === 'barber') {
+      userData.salonOwnerId = salonOwnerId;
+      userData.barberId = barberId;
+    }
+
+    const user = new User(userData);
     await user.save();
+
+    // If barber, update barber record to link to user account
+    if (userRole === 'barber') {
+      const Barber = (await import('../models/Barber.js')).default;
+      await Barber.findByIdAndUpdate(barberId, { barberUserId: user._id });
+    }
 
     // Return user without PIN
     const userResponse = user.toJSON();
@@ -39,6 +82,7 @@ export const register = async (req, res) => {
     res.status(201).json({
       message: 'Account created successfully',
       user: userResponse,
+      role: userResponse.role || 'salon_owner', // Explicitly include role in response
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -94,6 +138,7 @@ export const login = async (req, res) => {
       message: 'Login successful',
       user: userResponse,
       isAdmin: false,
+      role: userResponse.role || 'salon_owner',
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -357,6 +402,36 @@ export const forgotPin = async (req, res) => {
 };
 
 // Reset PIN - Verify OTP and reset PIN
+// Check email and return user role (for role detection before login)
+export const checkEmail = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Check if user exists in regular auth
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    
+    if (user) {
+      return res.json({
+        exists: true,
+        role: user.role || 'salon_owner',
+      });
+    }
+
+    // User doesn't exist
+    return res.json({
+      exists: false,
+      role: null,
+    });
+  } catch (error) {
+    console.error('Check email error:', error);
+    res.status(500).json({ error: error.message || 'Failed to check email' });
+  }
+};
+
 export const resetPin = async (req, res) => {
   try {
     const { email, otp, newPin } = req.body;

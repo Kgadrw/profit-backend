@@ -8,6 +8,7 @@ import {
   getSystemHealth,
   getUserUsage,
   getScheduleStats,
+  getBarberDashboardStats,
   deleteUser,
   testEmail,
   sendEmailToUser,
@@ -43,6 +44,9 @@ router.get('/health', getSystemHealth);
 
 // Get schedule statistics
 router.get('/schedule-stats', getScheduleStats);
+
+// Get barber dashboard statistics
+router.get('/barber-dashboard-stats', getBarberDashboardStats);
 
 // Delete user and all their data
 router.delete('/users/:userId', validateObjectId, deleteUser);

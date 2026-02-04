@@ -31,6 +31,21 @@ const userSchema = new mongoose.Schema({
     trim: true,
     default: undefined, // Leave blank - user sets it in settings
   },
+  role: {
+    type: String,
+    enum: ['salon_owner', 'barber'],
+    default: 'salon_owner',
+  },
+  salonOwnerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null, // Only set for barbers - links to salon owner
+  },
+  barberId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Barber',
+    default: null, // Only set for barber users - links to Barber record
+  },
   pin: {
     type: String,
     required: [true, 'PIN is required'],

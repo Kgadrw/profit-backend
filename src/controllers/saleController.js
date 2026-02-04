@@ -1,6 +1,9 @@
 // Sale Controller
 import Sale from '../models/Sale.js';
 import Product from '../models/Product.js';
+import Service from '../models/Service.js';
+import Barber from '../models/Barber.js';
+import { emitToUser } from '../utils/websocket.js';
 
 // Helper to get userId from request
 const getUserId = async (req) => {
@@ -25,8 +28,22 @@ export const getSales = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
-    const { startDate, endDate, product } = req.query;
-    const query = { userId };
+    // Get user to check role
+    const User = (await import('../models/User.js')).default;
+    const user = await User.findById(userId);
+    
+    const { startDate, endDate, product, isService, barberId } = req.query;
+    const query = {};
+
+    // If user is a barber, only show their sales
+    if (user && user.role === 'barber' && user.barberId) {
+      query.barberId = user.barberId;
+      // Use salon owner's userId for the query
+      query.userId = user.salonOwnerId;
+    } else {
+      // Salon owner sees all sales for their business
+      query.userId = userId;
+    }
 
     if (startDate || endDate) {
       query.date = {};
@@ -46,7 +63,19 @@ export const getSales = async (req, res) => {
       query.product = { $regex: product, $options: 'i' };
     }
 
-    const sales = await Sale.find(query).sort({ date: -1 });
+    if (isService !== undefined) {
+      query.isService = isService === 'true';
+    }
+
+    // Additional barberId filter (for salon owners filtering by barber)
+    if (barberId && (!user || user.role !== 'barber')) {
+      query.barberId = barberId;
+    }
+
+    const sales = await Sale.find(query)
+      .populate('serviceId', 'name category')
+      .populate('barberId', 'name')
+      .sort({ date: -1 });
     res.json({ data: sales });
   } catch (error) {
     console.error('Get sales error:', error);
@@ -89,8 +118,70 @@ export const createSale = async (req, res) => {
     if (saleData.revenue) saleData.revenue = parseFloat(saleData.revenue);
     if (saleData.cost) saleData.cost = parseFloat(saleData.cost);
     if (saleData.profit) saleData.profit = parseFloat(saleData.profit);
+    if (saleData.customAmount) saleData.customAmount = parseFloat(saleData.customAmount);
     if (saleData.date) saleData.date = new Date(saleData.date);
 
+    // Handle service sales
+    if (saleData.isService) {
+      // Validate service and barber exist and belong to user
+      if (saleData.serviceId) {
+        const service = await Service.findOne({ _id: saleData.serviceId, userId });
+        if (!service) {
+          return res.status(404).json({ error: 'Service not found' });
+        }
+      }
+
+      if (saleData.barberId) {
+        const barber = await Barber.findOne({ _id: saleData.barberId, userId });
+        if (!barber) {
+          return res.status(404).json({ error: 'Barber not found' });
+        }
+      }
+
+      // Calculate revenue based on pricing priority:
+      // 1. Custom amount (if provided)
+      // 2. Service default price
+      if (!saleData.revenue) {
+        let calculatedRevenue = 0;
+
+        if (saleData.customAmount) {
+          // Priority 1: Custom amount
+          calculatedRevenue = saleData.customAmount;
+        } else if (saleData.serviceId) {
+          // Priority 2: Service default price
+          const service = await Service.findOne({ _id: saleData.serviceId, userId });
+          if (service && service.defaultPrice) {
+            calculatedRevenue = service.defaultPrice;
+          }
+        }
+
+        // If still no revenue calculated, require it to be provided
+        if (calculatedRevenue === 0 && !saleData.revenue) {
+          return res.status(400).json({ 
+            error: 'Revenue is required. Please provide customAmount or service default price.' 
+          });
+        }
+
+        saleData.revenue = calculatedRevenue;
+      }
+
+      // For services, cost is typically 0 unless specified
+      if (!saleData.cost) {
+        saleData.cost = 0;
+      }
+
+      // Calculate profit
+      saleData.profit = saleData.revenue - saleData.cost;
+
+      // Set product name from service name for display
+      if (saleData.serviceId && !saleData.product) {
+        const service = await Service.findOne({ _id: saleData.serviceId, userId });
+        if (service) {
+          saleData.product = service.name;
+        }
+      }
+    } else {
+      // Handle product sales (existing logic)
     // If productId is provided, try to find and update product stock
     if (saleData.productId) {
       const product = await Product.findOne({ _id: saleData.productId, userId });
@@ -98,11 +189,15 @@ export const createSale = async (req, res) => {
         product.stock = Math.max(0, product.stock - saleData.quantity);
         await product.save();
         // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
+        }
       }
     }
 
     const sale = new Sale(saleData);
     await sale.save();
+
+    // Emit WebSocket event for real-time update
+    emitToUser(userId, 'sale:created', sale.toObject());
 
     res.status(201).json({ 
       message: 'Sale recorded successfully',
@@ -221,11 +316,16 @@ export const updateSale = async (req, res) => {
       { _id: req.params.id, userId },
       updateData,
       { new: true, runValidators: true }
-    );
+    )
+      .populate('serviceId', 'name category')
+      .populate('barberId', 'name');
 
     if (!sale) {
       return res.status(404).json({ error: 'Sale not found' });
     }
+
+    // Emit WebSocket event for real-time update
+    emitToUser(userId, 'sale:updated', sale.toObject());
 
     res.json({ 
       message: 'Sale updated successfully',
@@ -264,6 +364,9 @@ export const deleteSale = async (req, res) => {
 
     // Now delete the sale
     await Sale.findByIdAndDelete(req.params.id);
+
+    // Emit WebSocket event for real-time update
+    emitToUser(userId, 'sale:deleted', { _id: sale._id });
 
     res.json({ 
       message: 'Sale deleted successfully',

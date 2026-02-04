@@ -108,14 +108,19 @@ export const getAllUsers = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    // Import models
+    const Barber = (await import('../models/Barber.js')).default;
+    const Service = (await import('../models/Service.js')).default;
+
     // Get activity stats for each user
     const usersWithStats = await Promise.all(
       users.map(async (user) => {
         const productCount = await Product.countDocuments({ userId: user._id });
         const saleCount = await Sale.countDocuments({ userId: user._id });
         
-        const salesData = await Sale.aggregate([
-          { $match: { userId: user._id } },
+        // Get inventory sales (non-service sales)
+        const inventorySalesData = await Sale.aggregate([
+          { $match: { userId: user._id, isService: { $ne: true } } },
           {
             $group: {
               _id: null,
@@ -125,15 +130,53 @@ export const getAllUsers = async (req, res) => {
           },
         ]);
 
-        const salesStats = salesData[0] || { totalRevenue: 0, totalProfit: 0 };
+        // Get service sales stats (for salon owners)
+        const serviceSalesData = await Sale.aggregate([
+          { $match: { userId: user._id, isService: true } },
+          {
+            $group: {
+              _id: null,
+              totalRevenue: { $sum: '$revenue' },
+              totalProfit: { $sum: '$profit' },
+              count: { $sum: 1 },
+            },
+          },
+        ]);
+
+        const inventoryStats = inventorySalesData[0] || { totalRevenue: 0, totalProfit: 0 };
+        const serviceStats = serviceSalesData[0] || { totalRevenue: 0, totalProfit: 0, count: 0 };
+
+        // Get barber-related stats for salon owners
+        let barberCount = 0;
+        let serviceCount = 0;
+        if (user.role === 'salon_owner') {
+          barberCount = await Barber.countDocuments({ userId: user._id });
+          serviceCount = await Service.countDocuments({ userId: user._id });
+        }
+
+        // Determine user type label
+        let userType = 'Inventory Manager';
+        if (user.role === 'salon_owner') {
+          userType = 'Salon Owner';
+        } else if (user.role === 'barber') {
+          userType = 'Barber';
+        }
 
         return {
           ...user,
-          phone: user.phone || null, // Explicitly include phone number
+          phone: user.phone || null,
+          role: user.role || 'salon_owner', // Explicitly include role
+          userType, // Human-readable type
           productCount,
           saleCount,
-          totalRevenue: salesStats.totalRevenue || 0,
-          totalProfit: salesStats.totalProfit || 0,
+          totalRevenue: inventoryStats.totalRevenue || 0,
+          totalProfit: inventoryStats.totalProfit || 0,
+          // Barber dashboard stats
+          barberCount,
+          serviceCount,
+          serviceSaleCount: serviceStats.count || 0,
+          serviceRevenue: serviceStats.totalRevenue || 0,
+          serviceProfit: serviceStats.totalProfit || 0,
         };
       })
     );
@@ -405,6 +448,139 @@ export const getUserUsage = async (req, res) => {
   } catch (error) {
     console.error('Get user usage error:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch user usage statistics' });
+  }
+};
+
+// Get barber dashboard statistics
+export const getBarberDashboardStats = async (req, res) => {
+  try {
+    const Barber = (await import('../models/Barber.js')).default;
+    const Service = (await import('../models/Service.js')).default;
+    const Sale = (await import('../models/Sale.js')).default;
+
+    // Get all salon owners
+    const salonOwners = await User.find({ role: 'salon_owner' }).select('-pin').lean();
+    
+    // Get all barbers (users with role 'barber')
+    const barbers = await User.find({ role: 'barber' }).select('-pin').lean();
+
+    // Get total barber records
+    const totalBarberRecords = await Barber.countDocuments();
+
+    // Get total services
+    const totalServices = await Service.countDocuments();
+
+    // Get service sales stats
+    const serviceSalesData = await Sale.aggregate([
+      { $match: { isService: true } },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: 1 },
+          totalRevenue: { $sum: '$revenue' },
+          totalProfit: { $sum: '$profit' },
+        },
+      },
+    ]);
+
+    const serviceSalesStats = serviceSalesData[0] || { totalSales: 0, totalRevenue: 0, totalProfit: 0 };
+
+    // Get recent service sales (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const recentServiceSales = await Sale.countDocuments({
+      isService: true,
+      date: { $gte: sevenDaysAgo },
+    });
+
+    // Get barbers by salon owner
+    const barbersByOwner = await Promise.all(
+      salonOwners.map(async (owner) => {
+        const barberRecords = await Barber.countDocuments({ userId: owner._id });
+        const barberUsers = await User.countDocuments({ salonOwnerId: owner._id, role: 'barber' });
+        const services = await Service.countDocuments({ userId: owner._id });
+        const serviceSales = await Sale.countDocuments({ userId: owner._id, isService: true });
+        
+        const salesData = await Sale.aggregate([
+          { $match: { userId: owner._id, isService: true } },
+          {
+            $group: {
+              _id: null,
+              totalRevenue: { $sum: '$revenue' },
+            },
+          },
+        ]);
+        const revenue = salesData[0]?.totalRevenue || 0;
+
+        return {
+          salonOwnerId: owner._id,
+          salonOwnerName: owner.name,
+          salonOwnerEmail: owner.email,
+          barberRecords,
+          barberUsers,
+          services,
+          serviceSales,
+          revenue,
+        };
+      })
+    );
+
+    // Get top barbers by sales
+    const topBarbers = await Sale.aggregate([
+      { $match: { isService: true, barberId: { $exists: true } } },
+      {
+        $group: {
+          _id: '$barberId',
+          totalSales: { $sum: 1 },
+          totalRevenue: { $sum: '$revenue' },
+        },
+      },
+      { $sort: { totalRevenue: -1 } },
+      { $limit: 10 },
+    ]);
+
+    // Populate barber names
+    const topBarbersWithNames = await Promise.all(
+      topBarbers.map(async (barber) => {
+        const barberRecord = await Barber.findById(barber._id);
+        return {
+          barberId: barber._id,
+          barberName: barberRecord?.name || 'Unknown',
+          totalSales: barber.totalSales,
+          totalRevenue: barber.totalRevenue,
+        };
+      })
+    );
+
+    // Get recent service sales activity
+    const recentServiceSalesList = await Sale.find({ isService: true })
+      .sort({ date: -1 })
+      .limit(20)
+      .populate('serviceId', 'name')
+      .populate('barberId', 'name')
+      .populate('userId', 'name email')
+      .lean();
+
+    res.json({
+      data: {
+        totalSalonOwners: salonOwners.length,
+        totalBarbers: barbers.length,
+        totalBarberRecords,
+        totalServices,
+        serviceSales: {
+          total: serviceSalesStats.totalSales,
+          totalRevenue: serviceSalesStats.totalRevenue,
+          totalProfit: serviceSalesStats.totalProfit,
+          recent: recentServiceSales,
+        },
+        barbersByOwner,
+        topBarbers: topBarbersWithNames,
+        recentServiceSales: recentServiceSalesList,
+      },
+    });
+  } catch (error) {
+    console.error('Get barber dashboard stats error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch barber dashboard stats' });
   }
 };
 

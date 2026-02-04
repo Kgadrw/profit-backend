@@ -130,13 +130,36 @@ export const validateProduct = [
 // Sale validation
 export const validateSale = [
   body('product')
+    .optional()
     .trim()
-    .notEmpty().withMessage('Product name is required')
+    .custom((value, { req }) => {
+      // Product is required only if isService is false or not provided
+      if (!req.body.isService && (!value || value.trim() === '')) {
+        throw new Error('Product name is required for non-service sales');
+      }
+      return true;
+    })
     .isLength({ min: 1, max: 200 }).withMessage('Product name must be between 1 and 200 characters'),
   
   body('productId')
     .optional()
     .isMongoId().withMessage('Invalid product ID format'),
+  
+  body('isService')
+    .optional()
+    .isBoolean().withMessage('isService must be a boolean'),
+  
+  body('serviceId')
+    .optional()
+    .isMongoId().withMessage('Invalid service ID format'),
+  
+  body('barberId')
+    .optional()
+    .isMongoId().withMessage('Invalid barber ID format'),
+  
+  body('customAmount')
+    .optional()
+    .isFloat({ min: 0 }).withMessage('Custom amount must be a non-negative number'),
   
   body('quantity')
     .notEmpty().withMessage('Quantity is required')
