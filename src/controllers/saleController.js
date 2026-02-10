@@ -2,7 +2,6 @@
 import Sale from '../models/Sale.js';
 import Product from '../models/Product.js';
 import Service from '../models/Service.js';
-import Barber from '../models/Barber.js';
 import { emitToUser } from '../utils/websocket.js';
 
 // Helper to get userId from request
@@ -28,22 +27,8 @@ export const getSales = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
-    // Get user to check role
-    const User = (await import('../models/User.js')).default;
-    const user = await User.findById(userId);
-    
-    const { startDate, endDate, product, isService, barberId } = req.query;
-    const query = {};
-
-    // If user is a barber, only show their sales
-    if (user && user.role === 'barber' && user.barberId) {
-      query.barberId = user.barberId;
-      // Use salon owner's userId for the query
-      query.userId = user.salonOwnerId;
-    } else {
-      // Salon owner sees all sales for their business
-      query.userId = userId;
-    }
+    const { startDate, endDate, product, isService } = req.query;
+    const query = { userId };
 
     if (startDate || endDate) {
       query.date = {};
@@ -67,14 +52,8 @@ export const getSales = async (req, res) => {
       query.isService = isService === 'true';
     }
 
-    // Additional barberId filter (for salon owners filtering by barber)
-    if (barberId && (!user || user.role !== 'barber')) {
-      query.barberId = barberId;
-    }
-
     const sales = await Sale.find(query)
       .populate('serviceId', 'name category')
-      .populate('barberId', 'name')
       .sort({ date: -1 });
     res.json({ data: sales });
   } catch (error) {
@@ -131,12 +110,7 @@ export const createSale = async (req, res) => {
         }
       }
 
-      if (saleData.barberId) {
-        const barber = await Barber.findOne({ _id: saleData.barberId, userId });
-        if (!barber) {
-          return res.status(404).json({ error: 'Barber not found' });
-        }
-      }
+      // Barber functionality removed
 
       // Calculate revenue based on pricing priority:
       // 1. Custom amount (if provided)
@@ -317,8 +291,7 @@ export const updateSale = async (req, res) => {
       updateData,
       { new: true, runValidators: true }
     )
-      .populate('serviceId', 'name category')
-      .populate('barberId', 'name');
+      .populate('serviceId', 'name category');
 
     if (!sale) {
       return res.status(404).json({ error: 'Sale not found' });

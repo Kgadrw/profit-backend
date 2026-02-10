@@ -146,6 +146,9 @@ export const updateProduct = async (req, res) => {
 
     const updateData = { ...req.body };
     
+    // Remove MongoDB version field to avoid version conflicts
+    delete updateData.__v;
+    
     // Convert string numbers to numbers
     if (updateData.costPrice) updateData.costPrice = parseFloat(updateData.costPrice);
     if (updateData.sellingPrice) updateData.sellingPrice = parseFloat(updateData.sellingPrice);
@@ -153,9 +156,10 @@ export const updateProduct = async (req, res) => {
     if (updateData.minStock) updateData.minStock = parseInt(updateData.minStock);
     if (updateData.packageQuantity) updateData.packageQuantity = parseInt(updateData.packageQuantity);
 
+    // Use $set operator to avoid version conflicts
     const product = await Product.findOneAndUpdate(
       { _id: req.params.id, userId },
-      updateData,
+      { $set: updateData },
       { new: true, runValidators: true }
     );
 
@@ -175,6 +179,41 @@ export const updateProduct = async (req, res) => {
     console.error('Update product error:', error);
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
+    }
+    // Handle VersionError specifically
+    if (error.name === 'VersionError') {
+      // Retry with fresh data from database
+      try {
+        const freshProduct = await Product.findOne({ _id: req.params.id, userId });
+        if (!freshProduct) {
+          return res.status(404).json({ error: 'Product not found' });
+        }
+        
+        const updateData = { ...req.body };
+        delete updateData.__v;
+        delete updateData._id;
+        
+        // Convert string numbers to numbers
+        if (updateData.costPrice) updateData.costPrice = parseFloat(updateData.costPrice);
+        if (updateData.sellingPrice) updateData.sellingPrice = parseFloat(updateData.sellingPrice);
+        if (updateData.stock) updateData.stock = parseInt(updateData.stock);
+        if (updateData.minStock) updateData.minStock = parseInt(updateData.minStock);
+        if (updateData.packageQuantity) updateData.packageQuantity = parseInt(updateData.packageQuantity);
+        
+        // Update with fresh version
+        Object.assign(freshProduct, updateData);
+        const updatedProduct = await freshProduct.save();
+        
+        emitToUser(userId, 'product:updated', updatedProduct.toObject());
+        
+        return res.json({ 
+          message: 'Product updated successfully',
+          data: updatedProduct 
+        });
+      } catch (retryError) {
+        console.error('Retry update product error:', retryError);
+        return res.status(500).json({ error: 'Failed to update product due to version conflict. Please refresh and try again.' });
+      }
     }
     res.status(500).json({ error: error.message || 'Failed to update product' });
   }

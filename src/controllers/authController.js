@@ -5,7 +5,7 @@ import { sendEmail } from '../utils/emailService.js';
 
 export const register = async (req, res) => {
   try {
-    const { name, email, phone, pin, businessName, role, salonOwnerId, barberId } = req.body;
+    const { name, email, phone, pin, businessName, role } = req.body;
 
     // Validation
     if (!name || !pin || !email || !phone) {
@@ -18,31 +18,8 @@ export const register = async (req, res) => {
 
     // Validate role
     const userRole = role || 'salon_owner';
-    if (!['salon_owner', 'barber'].includes(userRole)) {
-      return res.status(400).json({ error: 'Invalid role. Must be salon_owner or barber' });
-    }
-
-    // For barber registration, validate salonOwnerId and barberId
-    if (userRole === 'barber') {
-      if (!salonOwnerId) {
-        return res.status(400).json({ error: 'Salon owner ID is required for barber registration' });
-      }
-      if (!barberId) {
-        return res.status(400).json({ error: 'Barber ID is required for barber registration' });
-      }
-      
-      // Verify salon owner exists
-      const salonOwner = await User.findById(salonOwnerId);
-      if (!salonOwner || salonOwner.role !== 'salon_owner') {
-        return res.status(400).json({ error: 'Invalid salon owner' });
-      }
-
-      // Verify barber record exists and belongs to salon owner
-      const Barber = (await import('../models/Barber.js')).default;
-      const barber = await Barber.findOne({ _id: barberId, userId: salonOwnerId });
-      if (!barber) {
-        return res.status(400).json({ error: 'Invalid barber record' });
-      }
+    if (userRole !== 'salon_owner') {
+      return res.status(400).json({ error: 'Invalid role. Only salon_owner is supported' });
     }
 
     // Check if user already exists by email
@@ -61,20 +38,8 @@ export const register = async (req, res) => {
       pin,
     };
 
-    // Add barber-specific fields
-    if (userRole === 'barber') {
-      userData.salonOwnerId = salonOwnerId;
-      userData.barberId = barberId;
-    }
-
     const user = new User(userData);
     await user.save();
-
-    // If barber, update barber record to link to user account
-    if (userRole === 'barber') {
-      const Barber = (await import('../models/Barber.js')).default;
-      await Barber.findByIdAndUpdate(barberId, { barberUserId: user._id });
-    }
 
     // Return user without PIN
     const userResponse = user.toJSON();
