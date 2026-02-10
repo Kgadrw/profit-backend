@@ -56,12 +56,68 @@ connectDatabase().then(async () => {
 app.use(securityHeaders);
 
 // CORS configuration with security
+// Allow all trippo.rw subdomains and localhost for development
+const getAllowedOrigins = () => {
+  const frontendUrl = process.env.FRONTEND_URL;
+  
+  // If FRONTEND_URL is explicitly set, use it
+  if (frontendUrl && frontendUrl !== '*') {
+    return frontendUrl;
+  }
+  
+  // Default: Allow all trippo.rw subdomains and localhost
+  // This includes: trippo.rw, admin.trippo.rw, dashboard.trippo.rw
+  // And for local dev: localhost, admin.localhost, dashboard.localhost
+  return (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    try {
+      const originUrl = new URL(origin);
+      const hostname = originUrl.hostname;
+      
+      // Allow all trippo.rw subdomains (http and https)
+      if (hostname === 'trippo.rw' || 
+          hostname.endsWith('.trippo.rw') ||
+          hostname.includes('trippo.rw')) {
+        return callback(null, true);
+      }
+      
+      // Allow localhost for development (any port, http or https)
+      if (hostname === 'localhost' || 
+          hostname === '127.0.0.1' ||
+          hostname.startsWith('admin.localhost') ||
+          hostname.startsWith('dashboard.localhost')) {
+        return callback(null, true);
+      }
+      
+      // Allow any origin in development mode
+      if (process.env.NODE_ENV === 'development') {
+        return callback(null, true);
+      }
+      
+      // Reject other origins in production
+      console.warn(`[CORS] Blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    } catch (error) {
+      // If URL parsing fails, allow in development, reject in production
+      if (process.env.NODE_ENV === 'development') {
+        return callback(null, true);
+      }
+      callback(new Error('Invalid origin'));
+    }
+  };
+};
+
 const corsOptions = {
-  origin: process.env.FRONTEND_URL || '*', // In production, specify exact frontend URL
+  origin: getAllowedOrigins(),
   credentials: true,
   optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Request-Id']
 };
 app.use(cors(corsOptions));
 
