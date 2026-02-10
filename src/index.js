@@ -75,8 +75,36 @@ app.use(sanitizeData);
 // Track API requests (apply to all routes)
 app.use(trackApiRequest);
 
+// Debug middleware: Log all incoming requests (only in development)
+if (process.env.NODE_ENV === 'development') {
+  app.use((req, res, next) => {
+    console.log(`📥 ${req.method} ${req.path} - Headers:`, {
+      'x-user-id': req.headers['x-user-id'] || 'missing',
+      'content-type': req.headers['content-type'] || 'missing'
+    });
+    next();
+  });
+}
+
 // API Routes
 app.use('/api', apiRoutes);
+
+// Debug: Log all registered routes (only in development)
+if (process.env.NODE_ENV === 'development') {
+  console.log('📋 Registered API routes:');
+  console.log('  - GET    /api/products');
+  console.log('  - POST   /api/products');
+  console.log('  - GET    /api/sales');
+  console.log('  - POST   /api/sales');
+  console.log('  - GET    /api/schedules');
+  console.log('  - POST   /api/schedules');
+  console.log('  - GET    /api/clients');
+  console.log('  - POST   /api/clients');
+  console.log('  - GET    /api/services');
+  console.log('  - POST   /api/auth/login');
+  console.log('  - POST   /api/auth/register');
+  console.log('  - GET    /api/admin/*');
+}
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -96,9 +124,24 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// 404 handler
+// 404 handler - log the requested path for debugging
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.path,
+    method: req.method,
+    availableEndpoints: [
+      '/api/products',
+      '/api/sales',
+      '/api/schedules',
+      '/api/clients',
+      '/api/services',
+      '/api/auth/login',
+      '/api/auth/register',
+      '/api/admin/*'
+    ]
+  });
 });
 
 // Error handler (security: don't leak sensitive information)

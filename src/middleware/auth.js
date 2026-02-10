@@ -48,11 +48,26 @@ export const authenticateUser = async (req, res, next) => {
 // Verify admin access
 export const authenticateAdmin = async (req, res, next) => {
   try {
-    const userId = req.headers['x-user-id'];
+    // Express normalizes headers to lowercase, but check both cases for safety
+    const userId = req.headers['x-user-id'] || req.headers['X-User-Id'];
+    
+    // Debug logging (only in development)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[Admin Auth] Request headers:', {
+        'x-user-id': req.headers['x-user-id'],
+        'X-User-Id': req.headers['X-User-Id'],
+        'all-headers': Object.keys(req.headers).filter(k => k.toLowerCase().includes('user')),
+        path: req.path,
+        method: req.method
+      });
+    }
     
     if (!userId || userId !== 'admin') {
+      console.log('[Admin Auth] Failed - userId:', userId, 'expected: admin');
       return res.status(403).json({ 
-        error: 'Admin access required. Unauthorized.' 
+        error: 'Admin access required. Unauthorized.',
+        received: userId || 'missing',
+        path: req.path
       });
     }
 
