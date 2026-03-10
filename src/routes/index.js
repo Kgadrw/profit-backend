@@ -7,6 +7,7 @@ import adminRoutes from './adminRoutes.js';
 import clientRoutes from './clientRoutes.js';
 import scheduleRoutes from './scheduleRoutes.js';
 import serviceRoutes from './serviceRoutes.js';
+import notificationRoutes from './notificationRoutes.js';
 
 const router = express.Router();
 
@@ -18,5 +19,6 @@ router.use('/admin', adminRoutes);
 router.use('/clients', clientRoutes);
 router.use('/schedules', scheduleRoutes);
 router.use('/services', serviceRoutes);
+router.use('/notifications', notificationRoutes);
 
 export default router;
