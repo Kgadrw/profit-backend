@@ -1,5 +1,16 @@
 import Expense from '../models/Expense.js';
 
+const normalizeExpenseDate = (value) => {
+  if (!value) return new Date();
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const now = new Date();
+    const parsed = new Date(`${value}T00:00:00`);
+    parsed.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+    return parsed;
+  }
+  return new Date(value);
+};
+
 // Get all expenses for current user (optionally filtered by date range)
 export const getExpenses = async (req, res) => {
   try {
@@ -67,7 +78,7 @@ export const createExpense = async (req, res) => {
       title: title?.trim(),
       amount: Number(amount),
       category: category ? category.trim() : 'general',
-      date: date ? new Date(date) : new Date(),
+      date: normalizeExpenseDate(date),
       note: note ? note.trim() : undefined,
       userId,
     });
@@ -101,7 +112,7 @@ export const updateExpense = async (req, res) => {
     if (title !== undefined) expense.title = title?.trim();
     if (amount !== undefined) expense.amount = Number(amount);
     if (category !== undefined) expense.category = category ? category.trim() : 'general';
-    if (date !== undefined) expense.date = new Date(date);
+    if (date !== undefined) expense.date = normalizeExpenseDate(date);
     if (note !== undefined) expense.note = note ? note.trim() : undefined;
 
     await expense.save();
