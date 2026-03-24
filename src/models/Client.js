@@ -9,11 +9,11 @@ const clientSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    required: [true, 'Client email is required'],
     trim: true,
     lowercase: true,
     validate: {
       validator: function(v) {
+        if (!v) return true;
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
       },
       message: 'Please enter a valid email address'

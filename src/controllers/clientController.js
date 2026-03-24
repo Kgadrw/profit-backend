@@ -49,21 +49,17 @@ export const createClient = async (req, res) => {
       return res.status(400).json({ error: 'Client name is required' });
     }
 
-    if (!email) {
-      return res.status(400).json({ error: 'Client email is required' });
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address' });
-    }
-
     if (!businessType) {
       return res.status(400).json({ error: 'Business type is required' });
     }
 
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
+    }
+
     const client = new Client({
       name: name.trim(),
-      email: email.trim().toLowerCase(),
+      email: email ? email.trim().toLowerCase() : undefined,
       phone: phone ? phone.trim() : undefined,
       businessType: businessType.trim(),
       clientType: clientType || 'other',
@@ -100,13 +96,11 @@ export const updateClient = async (req, res) => {
 
     if (name !== undefined) client.name = name.trim();
     if (email !== undefined) {
-      if (!email || !email.trim()) {
-        return res.status(400).json({ error: 'Client email is required' });
-      }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      const normalizedEmail = email ? email.trim() : '';
+      if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
         return res.status(400).json({ error: 'Please enter a valid email address' });
       }
-      client.email = email.trim().toLowerCase();
+      client.email = normalizedEmail ? normalizedEmail.toLowerCase() : undefined;
     }
     if (phone !== undefined) client.phone = phone ? phone.trim() : undefined;
     if (businessType !== undefined) {
