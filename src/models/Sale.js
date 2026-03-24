@@ -2,6 +2,12 @@
 import mongoose from 'mongoose';
 
 const saleSchema = new mongoose.Schema({
+  saleType: {
+    type: String,
+    enum: ['product', 'service'],
+    default: 'product',
+    index: true,
+  },
   product: {
     type: String,
     trim: true,
@@ -19,13 +25,21 @@ const saleSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  serviceName: {
+    type: String,
+    trim: true,
+  },
   serviceId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Service',
   },
-  barberId: {
+  workerId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Barber',
+    ref: 'Client',
+  },
+  workerName: {
+    type: String,
+    trim: true,
   },
   customAmount: {
     type: Number,
@@ -74,8 +88,9 @@ const saleSchema = new mongoose.Schema({
 // Index for faster queries
 saleSchema.index({ userId: 1, date: -1 });
 saleSchema.index({ userId: 1, product: 1 });
+saleSchema.index({ userId: 1, saleType: 1, date: -1 });
 saleSchema.index({ userId: 1, isService: 1, date: -1 });
-saleSchema.index({ userId: 1, barberId: 1, date: -1 });
+saleSchema.index({ userId: 1, workerId: 1, date: -1 });
 saleSchema.index({ userId: 1, serviceId: 1 });
 
 const Sale = mongoose.model('Sale', saleSchema);

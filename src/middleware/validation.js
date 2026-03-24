@@ -129,12 +129,17 @@ export const validateProduct = [
 
 // Sale validation
 export const validateSale = [
+  body('saleType')
+    .optional()
+    .isIn(['product', 'service']).withMessage('saleType must be product or service'),
+
   body('product')
     .optional()
     .trim()
     .custom((value, { req }) => {
-      // Product is required only if isService is false or not provided
-      if (!req.body.isService && (!value || value.trim() === '')) {
+      const isServiceSale = req.body.isService === true || req.body.saleType === 'service';
+      // Product name is required only for product sales
+      if (!isServiceSale && (!value || value.trim() === '')) {
         throw new Error('Product name is required for non-service sales');
       }
       return true;
@@ -153,9 +158,19 @@ export const validateSale = [
     .optional()
     .isMongoId().withMessage('Invalid service ID format'),
   
-  body('barberId')
+  body('serviceName')
     .optional()
-    .isMongoId().withMessage('Invalid barber ID format'),
+    .trim()
+    .isLength({ min: 1, max: 200 }).withMessage('Service name must be between 1 and 200 characters'),
+
+  body('workerId')
+    .optional()
+    .isMongoId().withMessage('Invalid worker ID format'),
+
+  body('workerName')
+    .optional()
+    .trim()
+    .isLength({ min: 1, max: 200 }).withMessage('Worker name must be between 1 and 200 characters'),
   
   body('customAmount')
     .optional()

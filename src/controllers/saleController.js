@@ -2,6 +2,7 @@
 import Sale from '../models/Sale.js';
 import Product from '../models/Product.js';
 import Service from '../models/Service.js';
+import Client from '../models/Client.js';
 import { emitToUser } from '../utils/websocket.js';
 
 // Helper to get userId from request
@@ -27,7 +28,7 @@ export const getSales = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
-    const { startDate, endDate, product, isService } = req.query;
+    const { startDate, endDate, product, isService, saleType, workerId } = req.query;
     const query = { userId };
 
     if (startDate || endDate) {
@@ -52,8 +53,17 @@ export const getSales = async (req, res) => {
       query.isService = isService === 'true';
     }
 
+    if (saleType) {
+      query.saleType = saleType;
+    }
+
+    if (workerId) {
+      query.workerId = workerId;
+    }
+
     const sales = await Sale.find(query)
       .populate('serviceId', 'name category')
+      .populate('workerId', 'name clientType')
       .sort({ date: -1 });
     res.json({ data: sales });
   } catch (error) {
@@ -100,8 +110,12 @@ export const createSale = async (req, res) => {
     if (saleData.customAmount) saleData.customAmount = parseFloat(saleData.customAmount);
     if (saleData.date) saleData.date = new Date(saleData.date);
 
+    const isServiceSale = saleData.saleType === 'service' || saleData.isService === true;
+    saleData.saleType = isServiceSale ? 'service' : 'product';
+    saleData.isService = isServiceSale;
+
     // Handle service sales
-    if (saleData.isService) {
+    if (isServiceSale) {
       // Validate service and barber exist and belong to user
       if (saleData.serviceId) {
         const service = await Service.findOne({ _id: saleData.serviceId, userId });
@@ -110,7 +124,13 @@ export const createSale = async (req, res) => {
         }
       }
 
-      // Barber functionality removed
+      if (saleData.workerId) {
+        const worker = await Client.findOne({ _id: saleData.workerId, userId, clientType: 'worker' });
+        if (!worker) {
+          return res.status(404).json({ error: 'Worker not found' });
+        }
+        saleData.workerName = saleData.workerName || worker.name;
+      }
 
       // Calculate revenue based on pricing priority:
       // 1. Custom amount (if provided)
@@ -147,13 +167,15 @@ export const createSale = async (req, res) => {
       // Calculate profit
       saleData.profit = saleData.revenue - saleData.cost;
 
-      // Set product name from service name for display
-      if (saleData.serviceId && !saleData.product) {
+      // Set product-like display name from service details for compatibility
+      if (!saleData.serviceName && saleData.serviceId) {
         const service = await Service.findOne({ _id: saleData.serviceId, userId });
         if (service) {
-          saleData.product = service.name;
+          saleData.serviceName = service.name;
         }
       }
+      saleData.product = saleData.product || saleData.serviceName || 'Service';
+      saleData.productId = undefined;
     } else {
       // Handle product sales (existing logic)
     // If productId is provided, try to find and update product stock
