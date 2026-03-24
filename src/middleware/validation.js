@@ -239,6 +239,34 @@ export const validateBulkSales = [
   handleValidationErrors
 ];
 
+// Expense validation
+export const validateExpense = [
+  body('title')
+    .trim()
+    .notEmpty().withMessage('Expense title is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Expense title must be between 1 and 200 characters'),
+
+  body('amount')
+    .notEmpty().withMessage('Expense amount is required')
+    .isFloat({ min: 0 }).withMessage('Expense amount must be a non-negative number'),
+
+  body('category')
+    .optional()
+    .trim()
+    .isLength({ max: 100 }).withMessage('Category must not exceed 100 characters'),
+
+  body('date')
+    .optional()
+    .isISO8601().withMessage('Expense date must be a valid ISO 8601 date'),
+
+  body('note')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 }).withMessage('Note must not exceed 1000 characters'),
+
+  handleValidationErrors
+];
+
 // MongoDB ObjectId validation - handles both 'id' and 'userId' parameter names
 export const validateObjectId = async (req, res, next) => {
   const id = req.params.id || req.params.userId;

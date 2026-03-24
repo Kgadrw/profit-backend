@@ -8,6 +8,7 @@ import clientRoutes from './clientRoutes.js';
 import scheduleRoutes from './scheduleRoutes.js';
 import serviceRoutes from './serviceRoutes.js';
 import notificationRoutes from './notificationRoutes.js';
+import expenseRoutes from './expenseRoutes.js';
 
 const router = express.Router();
 
@@ -20,5 +21,6 @@ router.use('/clients', clientRoutes);
 router.use('/schedules', scheduleRoutes);
 router.use('/services', serviceRoutes);
 router.use('/notifications', notificationRoutes);
+router.use('/expenses', expenseRoutes);
 
 export default router;
