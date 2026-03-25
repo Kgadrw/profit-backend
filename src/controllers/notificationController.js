@@ -45,6 +45,10 @@ export const createNotification = async (req, res) => {
       return res.status(401).json({ error: 'User not found. Please login first.' });
     }
 
+    // Policy: users should not create their own notifications.
+    // Notifications should only be created by admin (via admin endpoints).
+    return res.status(403).json({ error: 'Notifications can only be sent by admin.' });
+
     const { type, title, body, icon, data } = req.body;
 
     const notification = new Notification({

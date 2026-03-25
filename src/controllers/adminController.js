@@ -7,6 +7,7 @@ import Client from '../models/Client.js';
 import ServerStatus from '../models/ServerStatus.js';
 import { sendEmail } from '../utils/emailService.js';
 import mongoose from 'mongoose';
+import Notification from '../models/Notification.js';
 
 // Helper function to generate email header as table rows for admin emails
 const generateEmailHeaderTable = (senderUser) => {
@@ -992,6 +993,44 @@ export const sendBulkEmail = async (req, res) => {
   } catch (error) {
     console.error('Send bulk email error:', error);
     res.status(500).json({ error: error.message || 'Failed to send bulk email' });
+  }
+};
+
+// Send an in-app notification to a single user (admin only)
+export const sendNotificationToUser = async (req, res) => {
+  try {
+    const { userId, title, body, type, data, icon } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: 'Valid userId is required' });
+    }
+    if (!title || !String(title).trim() || !body || !String(body).trim()) {
+      return res.status(400).json({ error: 'title and body are required' });
+    }
+
+    // Ensure user exists
+    const user = await User.findById(userId).select('_id name email').lean();
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const notification = await Notification.create({
+      userId,
+      type: type || 'general',
+      title: String(title).trim(),
+      body: String(body).trim(),
+      icon: icon || '/logo.png',
+      data: data || {},
+      read: false,
+    });
+
+    res.status(201).json({
+      message: 'Notification sent',
+      data: notification,
+    });
+  } catch (error) {
+    console.error('Send notification to user error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send notification' });
   }
 };
 

@@ -58,6 +58,8 @@ export const register = async (req, res) => {
 export const login = async (req, res) => {
   try {
     const { pin, email } = req.body;
+    const normalizedEmail = email ? email.toLowerCase().trim() : '';
+    const adminAliases = new Set(['admin', 'admin@trippo.rw', 'admin@trippo.com']);
 
     // Validation
     if (!pin || !email) {
@@ -68,8 +70,8 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
     }
 
-    // Check for admin login
-    if (email && email.toLowerCase().trim() === 'admin' && pin === '2026') {
+    // Check for admin login (supports common aliases)
+    if (adminAliases.has(normalizedEmail) && pin === '2026') {
       return res.json({
         message: 'Admin login successful',
         user: {
@@ -84,7 +86,7 @@ export const login = async (req, res) => {
     }
 
     // Find user by email (email is now required)
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const user = await User.findOne({ email: normalizedEmail });
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -371,13 +373,22 @@ export const forgotPin = async (req, res) => {
 export const checkEmail = async (req, res) => {
   try {
     const { email } = req.body;
+    const normalizedEmail = email ? email.toLowerCase().trim() : '';
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
 
+    // Detect admin aliases up-front for role-aware UI flows
+    if (['admin', 'admin@trippo.rw', 'admin@trippo.com'].includes(normalizedEmail)) {
+      return res.json({
+        exists: true,
+        role: 'admin',
+      });
+    }
+
     // Check if user exists in regular auth
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const user = await User.findOne({ email: normalizedEmail });
     
     if (user) {
       return res.json({

@@ -62,8 +62,10 @@ export const validateLogin = [
     .optional()
     .trim()
     .custom((value) => {
-      // Allow "admin" as a special case for admin login (skip email validation)
-      if (value && value.toLowerCase().trim() === 'admin') {
+      // Allow admin aliases as a special case for admin login.
+      const normalized = value ? value.toLowerCase().trim() : '';
+      const adminAliases = ['admin', 'admin@trippo.rw', 'admin@trippo.com'];
+      if (normalized && adminAliases.includes(normalized)) {
         return true;
       }
       // For other values, validate as email if provided
@@ -76,9 +78,11 @@ export const validateLogin = [
       return true;
     })
     .customSanitizer((value) => {
-      // Don't normalize "admin", but normalize other emails
-      if (value && value.toLowerCase().trim() === 'admin') {
-        return value.trim().toLowerCase();
+      const normalized = value ? value.toLowerCase().trim() : '';
+      const adminAliases = ['admin', 'admin@trippo.rw', 'admin@trippo.com'];
+      // Normalize all admin aliases to canonical "admin"
+      if (normalized && adminAliases.includes(normalized)) {
+        return 'admin';
       }
       // For valid emails, normalize them
       if (value && value.includes('@')) {
