@@ -2,6 +2,8 @@
 import User from '../models/User.js';
 import OTP from '../models/OTP.js';
 import { sendEmail } from '../utils/emailService.js';
+import Sale from '../models/Sale.js';
+import mongoose from 'mongoose';
 
 export const register = async (req, res) => {
   try {
@@ -175,6 +177,43 @@ export const updateUser = async (req, res) => {
   } catch (error) {
     console.error('Update user error:', error);
     res.status(500).json({ error: error.message || 'Failed to update user' });
+  }
+};
+
+// Public ticket verification (NO AUTH)
+// Always returns 200 with { valid: true/false } to avoid "route not found" / 404 confusion.
+export const verifyTicket = async (req, res) => {
+  try {
+    const ticket = String(req.query.ticket || "").trim();
+    if (!ticket) {
+      return res.status(200).json({ valid: false });
+    }
+
+    // Prevent cast errors on invalid ids
+    if (!mongoose.Types.ObjectId.isValid(ticket)) {
+      return res.status(200).json({ valid: false });
+    }
+
+    const sale = await Sale.findById(ticket).lean();
+    if (!sale) {
+      return res.status(200).json({ valid: false });
+    }
+
+    // Return only safe, verification-friendly fields (no userId, no internal fields)
+    return res.status(200).json({
+      valid: true,
+      ticketId: String(sale._id),
+      serviceName: sale.serviceName || sale.product || "Service",
+      barberName: sale.workerName || "",
+      amount: Number(sale.revenue || 0),
+      currency: "RWF",
+      paymentMethod: sale.paymentMethod || "cash",
+      recordedAt: sale.timestamp || sale.date || sale.createdAt,
+    });
+  } catch (error) {
+    // Never fail hard for public verification
+    console.error("Verify ticket error:", error);
+    return res.status(200).json({ valid: false });
   }
 };
 

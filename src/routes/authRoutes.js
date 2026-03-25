@@ -1,6 +1,6 @@
 // Authentication Routes
 import express from 'express';
-import { register, login, getCurrentUser, updateUser, changePin, deleteAccount, forgotPin, resetPin, checkEmail } from '../controllers/authController.js';
+import { register, login, getCurrentUser, updateUser, changePin, deleteAccount, forgotPin, resetPin, checkEmail, verifyTicket } from '../controllers/authController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateRegister, validateLogin } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
@@ -21,6 +21,9 @@ router.post('/forgot-pin', rateLimiters.otp, forgotPin);
 
 // Reset PIN - Verify OTP and reset (with rate limiting)
 router.post('/reset-pin', rateLimiters.otp, resetPin);
+
+// Public ticket verification (no auth)
+router.get('/verify-ticket', rateLimiters.general, verifyTicket);
 
 // Get current user (requires authentication)
 router.get('/me', authenticateUser, getCurrentUser);
