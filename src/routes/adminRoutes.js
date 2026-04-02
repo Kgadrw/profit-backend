@@ -14,6 +14,7 @@ import {
   sendEmailToUser,
   sendBulkEmail,
   sendNotificationToUser,
+  sendBulkNotification,
 } from '../controllers/adminController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateObjectId } from '../middleware/validation.js';
@@ -63,5 +64,8 @@ router.post('/send-bulk-email', sendBulkEmail);
 
 // Send in-app notification to a single user
 router.post('/send-notification', sendNotificationToUser);
+
+// Send in-app notification to multiple users (or all users)
+router.post('/send-bulk-notification', sendBulkNotification);
 
 export default router;

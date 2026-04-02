@@ -1034,6 +1034,74 @@ export const sendNotificationToUser = async (req, res) => {
   }
 };
 
+// Send an in-app notification to multiple users (admin only)
+// - If userIds is provided: sends to those users
+// - If sendToAll=true: sends to all users
+export const sendBulkNotification = async (req, res) => {
+  try {
+    const { userIds, sendToAll, title, body, type, data, icon } = req.body;
+
+    if (!title || !String(title).trim() || !body || !String(body).trim()) {
+      return res.status(400).json({ error: 'title and body are required' });
+    }
+
+    const normalizedTitle = String(title).trim();
+    const normalizedBody = String(body).trim();
+    const normalizedType = type || 'general';
+    const normalizedIcon = icon || '/logo.png';
+    const normalizedData = data || {};
+
+    let targetUserIds = [];
+
+    if (sendToAll === true) {
+      const users = await User.find().select('_id').lean();
+      targetUserIds = users.map(u => u._id);
+    } else if (Array.isArray(userIds) && userIds.length > 0) {
+      // Validate and normalize ids
+      const validIds = userIds
+        .map((id) => String(id))
+        .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+      if (validIds.length === 0) {
+        return res.status(400).json({ error: 'At least one valid userId is required' });
+      }
+
+      // Ensure users exist
+      const users = await User.find({ _id: { $in: validIds } }).select('_id').lean();
+      targetUserIds = users.map(u => u._id);
+    } else {
+      return res.status(400).json({ error: 'Provide userIds[] or set sendToAll=true' });
+    }
+
+    if (targetUserIds.length === 0) {
+      return res.status(404).json({ error: 'No target users found' });
+    }
+
+    const docs = targetUserIds.map((uid) => ({
+      userId: uid,
+      type: normalizedType,
+      title: normalizedTitle,
+      body: normalizedBody,
+      icon: normalizedIcon,
+      data: normalizedData,
+      read: false,
+    }));
+
+    const created = await Notification.insertMany(docs, { ordered: false });
+
+    res.status(201).json({
+      message: `Notification sent to ${created.length} user(s)`,
+      data: {
+        totalRequested: targetUserIds.length,
+        totalSent: created.length,
+      },
+    });
+  } catch (error) {
+    console.error('Send bulk notification error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send bulk notification' });
+  }
+};
+
 // Test email configuration
 export const testEmail = async (req, res) => {
   try {
