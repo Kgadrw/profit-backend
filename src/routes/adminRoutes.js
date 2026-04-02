@@ -16,6 +16,8 @@ import {
   sendNotificationToUser,
   sendBulkNotification,
   getAdminNotificationHistory,
+  updateUserPaymentPlan,
+  markUserPaid,
 } from '../controllers/adminController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateObjectId } from '../middleware/validation.js';
@@ -71,5 +73,9 @@ router.post('/send-bulk-notification', sendBulkNotification);
 
 // Notification history (admin-sent by default)
 router.get('/notifications', getAdminNotificationHistory);
+
+// Payment plan management
+router.put('/users/:userId/payment-plan', validateObjectId, updateUserPaymentPlan);
+router.post('/users/:userId/mark-paid', validateObjectId, markUserPaid);
 
 export default router;

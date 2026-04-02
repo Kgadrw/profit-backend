@@ -4,6 +4,8 @@ import Schedule from '../models/Schedule.js';
 import User from '../models/User.js';
 import Client from '../models/Client.js';
 import { sendUserScheduleNotification, sendClientScheduleNotification } from './emailService.js';
+import Notification from '../models/Notification.js';
+import { sendMonthlyPaymentReminder } from './emailService.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -120,4 +122,84 @@ export const startScheduler = () => {
   checkAndSendNotifications();
   
   console.log('✅ Schedule notification scheduler started - checking every minute');
+
+  // Monthly payment reminders: run daily at 08:00 server time
+  cron.schedule('0 8 * * *', async () => {
+    await checkAndSendMonthlyPaymentReminders();
+  });
+  // Also run on startup once
+  checkAndSendMonthlyPaymentReminders();
+};
+
+const daysBetween = (a, b) => {
+  const ms = b.getTime() - a.getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+};
+
+const checkAndSendMonthlyPaymentReminders = async () => {
+  try {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    const users = await User.find({}).select('_id name email createdAt paymentPlan').lean();
+    if (!users.length) return;
+
+    for (const u of users) {
+      const plan = u.paymentPlan || {};
+      if (plan.active === false || plan.status === 'paused') continue;
+
+      const startDate = plan.startDate ? new Date(plan.startDate) : new Date(u.createdAt || Date.now());
+      const nextDue = plan.nextDueDate ? new Date(plan.nextDueDate) : (() => {
+        const nd = new Date(startDate);
+        nd.setMonth(nd.getMonth() + (plan.intervalMonths || 1));
+        return nd;
+      })();
+      nextDue.setHours(0, 0, 0, 0);
+
+      const diffDays = daysBetween(now, nextDue); // positive means due in future
+
+      let stage = null;
+      if (diffDays === 3) stage = 'due_3';
+      if (diffDays === 0) stage = 'due_0';
+      if (diffDays === -7) stage = 'overdue_7';
+      if (!stage) continue;
+
+      // prevent resending same stage in same day
+      const lastStage = plan.reminderStage || '';
+      const lastAt = plan.lastReminderAt ? new Date(plan.lastReminderAt) : null;
+      const sentToday = lastAt && daysBetween(now, new Date(lastAt.setHours(0,0,0,0))) === 0;
+      if (lastStage === stage && sentToday) continue;
+
+      // Send email (if configured)
+      await sendMonthlyPaymentReminder(u, { ...plan, nextDueDate: nextDue }, { name: 'Trippo', email: '' }, { stage });
+
+      // Create in-app notification
+      await Notification.create({
+        userId: u._id,
+        sentBy: 'system',
+        type: 'general',
+        title: 'Payment reminder',
+        body: `Your monthly payment of ${(plan.amount || 5800).toLocaleString()} ${(plan.currency || 'RWF')} is due on ${nextDue.toLocaleDateString()}.`,
+        icon: '/logo.png',
+        data: { kind: 'billing', stage, dueDate: nextDue.toISOString() },
+        read: false,
+      });
+
+      // Update user's plan reminder metadata + mark past_due if overdue
+      await User.updateOne(
+        { _id: u._id },
+        {
+          $set: {
+            'paymentPlan.startDate': startDate,
+            'paymentPlan.nextDueDate': nextDue,
+            'paymentPlan.lastReminderAt': new Date(),
+            'paymentPlan.reminderStage': stage,
+            'paymentPlan.status': diffDays < 0 ? 'past_due' : (plan.status || 'active'),
+          },
+        }
+      );
+    }
+  } catch (error) {
+    console.error('Error in monthly payment reminder check:', error);
+  }
 };

@@ -1135,6 +1135,89 @@ export const getAdminNotificationHistory = async (req, res) => {
   }
 };
 
+// Update a user's monthly payment plan (admin only)
+export const updateUserPaymentPlan = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: 'Valid userId is required' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan = user.paymentPlan || {};
+    const {
+      active,
+      amount,
+      currency,
+      intervalMonths,
+      startDate,
+      nextDueDate,
+      status,
+    } = req.body || {};
+
+    if (active !== undefined) plan.active = !!active;
+    if (amount !== undefined) plan.amount = Number(amount);
+    if (currency !== undefined) plan.currency = String(currency || 'RWF');
+    if (intervalMonths !== undefined) plan.intervalMonths = Math.max(1, Number(intervalMonths) || 1);
+    if (status !== undefined) plan.status = String(status);
+
+    if (startDate !== undefined) plan.startDate = startDate ? new Date(startDate) : null;
+    if (nextDueDate !== undefined) plan.nextDueDate = nextDueDate ? new Date(nextDueDate) : null;
+
+    // If dates are missing, compute defaults
+    const baseStart = plan.startDate || user.createdAt || new Date();
+    if (!plan.startDate) plan.startDate = baseStart;
+    if (!plan.nextDueDate) {
+      const next = new Date(baseStart);
+      next.setMonth(next.getMonth() + (plan.intervalMonths || 1));
+      plan.nextDueDate = next;
+    }
+
+    user.paymentPlan = plan;
+    await user.save();
+
+    res.json({ message: 'Payment plan updated', data: user.paymentPlan });
+  } catch (error) {
+    console.error('Update payment plan error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update payment plan' });
+  }
+};
+
+// Mark user as paid and roll next due date forward (admin only)
+export const markUserPaid = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: 'Valid userId is required' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan = user.paymentPlan || {};
+    const paidAt = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
+    plan.lastPaidAt = paidAt;
+    plan.status = 'active';
+    plan.reminderStage = '';
+    plan.lastReminderAt = null;
+
+    const base = plan.nextDueDate || plan.startDate || user.createdAt || new Date();
+    const next = new Date(base);
+    next.setMonth(next.getMonth() + (plan.intervalMonths || 1));
+    plan.nextDueDate = next;
+
+    user.paymentPlan = plan;
+    await user.save();
+
+    res.json({ message: 'Payment marked as paid', data: user.paymentPlan });
+  } catch (error) {
+    console.error('Mark paid error:', error);
+    res.status(500).json({ error: error.message || 'Failed to mark paid' });
+  }
+};
+
 // Test email configuration
 export const testEmail = async (req, res) => {
   try {

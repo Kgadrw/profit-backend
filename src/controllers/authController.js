@@ -38,9 +38,28 @@ export const register = async (req, res) => {
       businessName: userRole === 'salon_owner' ? undefined : undefined, // Always leave blank - user sets it in settings
       role: userRole,
       pin,
+      paymentPlan: {
+        active: true,
+        amount: 5800,
+        currency: 'RWF',
+        intervalMonths: 1,
+        // startDate/nextDueDate will be set after save when createdAt exists
+      }
     };
 
     const user = new User(userData);
+    await user.save();
+
+    // Initialize billing dates based on join date (createdAt)
+    const startDate = user.createdAt || new Date();
+    const next = new Date(startDate);
+    next.setMonth(next.getMonth() + 1);
+    user.paymentPlan = {
+      ...(user.paymentPlan || {}),
+      startDate,
+      nextDueDate: next,
+      status: 'active',
+    };
     await user.save();
 
     // Return user without PIN

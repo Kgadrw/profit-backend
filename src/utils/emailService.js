@@ -294,6 +294,73 @@ export const sendClientScheduleNotification = async (client, schedule, senderUse
   });
 };
 
+// Send monthly payment reminder to user
+export const sendMonthlyPaymentReminder = async (user, plan, senderUser, context = {}) => {
+  if (!user?.email) {
+    return { success: false, message: 'User does not have an email address' };
+  }
+
+  const amount = Number(plan?.amount || 5800);
+  const currency = String(plan?.currency || 'RWF');
+  const nextDue = plan?.nextDueDate ? new Date(plan.nextDueDate) : null;
+  const dueText = nextDue ? nextDue.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'soon';
+
+  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
+  const senderEmail = senderUser?.email || process.env.SMTP_USER;
+
+  const subject = `Monthly subscription payment reminder (${amount.toLocaleString()} ${currency})`;
+  const message = `Hello ${user.name}, this is a reminder to pay your monthly subscription of ${amount.toLocaleString()} ${currency}. Due date: ${dueText}.`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
+      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
+        <tr>
+          <td style="padding: 40px 20px;">
+            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+              ${generateEmailHeader(senderUser || user)}
+              <tr>
+                <td style="padding: 30px;">
+                  <h2 style="color: #1e293b; margin: 0 0 14px 0; font-size: 22px; font-weight: 600;">Payment Reminder</h2>
+                  <p style="color: #475569; margin: 0 0 18px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
+                  <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 18px; border-radius: 6px; margin: 18px 0;">
+                    <p style="color: #1e293b; margin: 0; font-size: 15px; line-height: 1.8; font-weight: 500;">
+                      Your monthly subscription is <strong>${amount.toLocaleString()} ${currency}</strong>.
+                      ${nextDue ? `The due date is <strong>${dueText}</strong>.` : ''}
+                    </p>
+                  </div>
+                  <p style="color: #64748b; margin: 0; font-size: 13px; line-height: 1.6;">
+                    If you have already paid, you can ignore this reminder.
+                  </p>
+                  <div style="margin-top: 26px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
+                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
+                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+
+  return await sendEmail({
+    to: user.email,
+    subject,
+    text: message,
+    html,
+    fromName: companyName,
+    fromEmail: senderEmail,
+  });
+};
+
 // Send completion notification
 export const sendCompletionNotification = async (schedule, senderUser, completionMessage, options = {}) => {
   const { notifyClient = false, notifyUser = false } = options;

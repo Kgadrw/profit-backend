@@ -52,6 +52,20 @@ const userSchema = new mongoose.Schema({
     minlength: 4,
     maxlength: 4,
   },
+
+  // Monthly payment plan (admin-managed)
+  paymentPlan: {
+    active: { type: Boolean, default: true },
+    amount: { type: Number, default: 5800 }, // RWF per month
+    currency: { type: String, default: 'RWF' },
+    intervalMonths: { type: Number, default: 1 },
+    startDate: { type: Date, default: null }, // when plan starts (defaults to createdAt)
+    nextDueDate: { type: Date, default: null }, // computed from startDate/lastPaidAt
+    lastPaidAt: { type: Date, default: null },
+    status: { type: String, enum: ['active', 'past_due', 'paused'], default: 'active' },
+    lastReminderAt: { type: Date, default: null },
+    reminderStage: { type: String, default: '' }, // e.g. 'due_3', 'due_0', 'overdue_7'
+  },
 }, {
   timestamps: true,
 });
