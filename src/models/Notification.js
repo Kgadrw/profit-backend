@@ -8,6 +8,12 @@ const notificationSchema = new mongoose.Schema({
     required: [true, 'User ID is required'],
     index: true,
   },
+  sentBy: {
+    // Used for admin notification history (who generated this notification)
+    type: String,
+    default: 'system',
+    index: true,
+  },
   type: {
     type: String,
     enum: ['new_user', 'low_stock', 'schedule', 'new_sale', 'new_product', 'general'],
@@ -41,6 +47,7 @@ const notificationSchema = new mongoose.Schema({
 
 // Index for efficient queries: user's notifications sorted by newest first
 notificationSchema.index({ userId: 1, createdAt: -1 });
+notificationSchema.index({ sentBy: 1, createdAt: -1 });
 
 // Auto-delete notifications older than 30 days
 notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });

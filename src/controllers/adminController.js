@@ -1016,6 +1016,7 @@ export const sendNotificationToUser = async (req, res) => {
 
     const notification = await Notification.create({
       userId,
+      sentBy: 'admin',
       type: type || 'general',
       title: String(title).trim(),
       body: String(body).trim(),
@@ -1079,6 +1080,7 @@ export const sendBulkNotification = async (req, res) => {
 
     const docs = targetUserIds.map((uid) => ({
       userId: uid,
+      sentBy: 'admin',
       type: normalizedType,
       title: normalizedTitle,
       body: normalizedBody,
@@ -1099,6 +1101,37 @@ export const sendBulkNotification = async (req, res) => {
   } catch (error) {
     console.error('Send bulk notification error:', error);
     res.status(500).json({ error: error.message || 'Failed to send bulk notification' });
+  }
+};
+
+// Admin notification history (sent notifications)
+export const getAdminNotificationHistory = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const skip = parseInt(req.query.skip, 10) || 0;
+    const sentBy = String(req.query.sentBy || 'admin'); // default: admin-sent
+
+    const query = sentBy ? { sentBy } : {};
+
+    const [rows, total] = await Promise.all([
+      Notification.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('userId', 'name email businessName')
+        .lean(),
+      Notification.countDocuments(query),
+    ]);
+
+    res.json({
+      data: rows,
+      total,
+      limit,
+      skip,
+    });
+  } catch (error) {
+    console.error('Get admin notification history error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch notification history' });
   }
 };
 
