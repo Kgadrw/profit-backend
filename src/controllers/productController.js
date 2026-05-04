@@ -1,5 +1,6 @@
 // Product Controller
 import Product from '../models/Product.js';
+import Inventory from '../models/Inventory.js';
 import { emitToUser } from '../utils/websocket.js';
 
 // Helper to get userId from request
@@ -25,7 +26,13 @@ export const getProducts = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
-    const products = await Product.find({ userId }).sort({ createdAt: -1 });
+    const { inventoryId } = req.query;
+    const query = { userId };
+    if (inventoryId) {
+      query.inventoryId = inventoryId === 'null' ? null : inventoryId;
+    }
+
+    const products = await Product.find(query).sort({ createdAt: -1 });
     res.json({ data: products });
   } catch (error) {
     console.error('Get products error:', error);
@@ -62,6 +69,16 @@ export const createProduct = async (req, res) => {
       ...req.body,
       userId,
     };
+
+    // Validate inventory ownership if provided
+    if (productData.inventoryId) {
+      const inv = await Inventory.findOne({ _id: productData.inventoryId, userId });
+      if (!inv) {
+        return res.status(404).json({ error: 'Inventory not found' });
+      }
+    } else if (productData.inventoryId === null || productData.inventoryId === '') {
+      productData.inventoryId = null;
+    }
 
     // Convert string numbers to numbers
     if (productData.costPrice) productData.costPrice = parseFloat(productData.costPrice);

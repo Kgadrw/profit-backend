@@ -1197,16 +1197,40 @@ export const markUserPaid = async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const plan = user.paymentPlan || {};
+
+    // Ensure numeric interval and defaults exist
+    const intervalMonths = Math.max(1, Number(plan.intervalMonths || 1) || 1);
+    plan.intervalMonths = intervalMonths;
+    if (plan.amount === undefined || plan.amount === null) plan.amount = 5800;
+    if (!plan.currency) plan.currency = 'RWF';
+    if (plan.active === undefined) plan.active = true;
+
     const paidAt = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
     plan.lastPaidAt = paidAt;
     plan.status = 'active';
     plan.reminderStage = '';
     plan.lastReminderAt = null;
 
-    const base = plan.nextDueDate || plan.startDate || user.createdAt || new Date();
+    // Ensure startDate exists
+    const startDate = plan.startDate ? new Date(plan.startDate) : (user.createdAt || new Date());
+    plan.startDate = startDate;
+
+    // Compute next due date safely
+    const baseRaw = plan.nextDueDate || plan.startDate || user.createdAt || new Date();
+    let base = new Date(baseRaw);
+    if (Number.isNaN(base.getTime())) {
+      base = new Date();
+    }
     const next = new Date(base);
-    next.setMonth(next.getMonth() + (plan.intervalMonths || 1));
-    plan.nextDueDate = next;
+    next.setMonth(next.getMonth() + intervalMonths);
+    if (Number.isNaN(next.getTime())) {
+      // Fallback: startDate + interval
+      const fallback = new Date(startDate);
+      fallback.setMonth(fallback.getMonth() + intervalMonths);
+      plan.nextDueDate = fallback;
+    } else {
+      plan.nextDueDate = next;
+    }
 
     user.paymentPlan = plan;
     await user.save();

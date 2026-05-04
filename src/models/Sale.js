@@ -8,6 +8,13 @@ const saleSchema = new mongoose.Schema({
     default: 'product',
     index: true,
   },
+  // Optional: link a sale to the inventory (usually inferred from product)
+  inventoryId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Inventory',
+    default: null,
+    index: true,
+  },
   product: {
     type: String,
     trim: true,
@@ -92,6 +99,7 @@ saleSchema.index({ userId: 1, saleType: 1, date: -1 });
 saleSchema.index({ userId: 1, isService: 1, date: -1 });
 saleSchema.index({ userId: 1, workerId: 1, date: -1 });
 saleSchema.index({ userId: 1, serviceId: 1 });
+saleSchema.index({ userId: 1, inventoryId: 1, date: -1 });
 
 const Sale = mongoose.model('Sale', saleSchema);
 

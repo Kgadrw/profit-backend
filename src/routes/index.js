@@ -9,6 +9,7 @@ import scheduleRoutes from './scheduleRoutes.js';
 import serviceRoutes from './serviceRoutes.js';
 import notificationRoutes from './notificationRoutes.js';
 import expenseRoutes from './expenseRoutes.js';
+import inventoryRoutes from './inventoryRoutes.js';
 
 const router = express.Router();
 
@@ -22,5 +23,6 @@ router.use('/schedules', scheduleRoutes);
 router.use('/services', serviceRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/expenses', expenseRoutes);
+router.use('/inventories', inventoryRoutes);
 
 export default router;

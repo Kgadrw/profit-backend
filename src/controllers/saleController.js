@@ -28,7 +28,7 @@ export const getSales = async (req, res) => {
       return res.status(404).json({ error: 'User not found. Please login first.' });
     }
 
-    const { startDate, endDate, product, isService, saleType, workerId } = req.query;
+    const { startDate, endDate, product, isService, saleType, workerId, inventoryId } = req.query;
     const query = { userId };
 
     if (startDate || endDate) {
@@ -59,6 +59,10 @@ export const getSales = async (req, res) => {
 
     if (workerId) {
       query.workerId = workerId;
+    }
+
+    if (inventoryId) {
+      query.inventoryId = inventoryId === 'null' ? null : inventoryId;
     }
 
     const sales = await Sale.find(query)
@@ -176,12 +180,17 @@ export const createSale = async (req, res) => {
       }
       saleData.product = saleData.product || saleData.serviceName || 'Service';
       saleData.productId = undefined;
+      saleData.inventoryId = null;
     } else {
       // Handle product sales (existing logic)
     // If productId is provided, try to find and update product stock
     if (saleData.productId) {
       const product = await Product.findOne({ _id: saleData.productId, userId });
       if (product) {
+        // Infer inventory from the product unless explicitly provided
+        if (saleData.inventoryId === undefined) {
+          saleData.inventoryId = product.inventoryId ?? null;
+        }
         product.stock = Math.max(0, product.stock - saleData.quantity);
         await product.save();
         // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
@@ -238,6 +247,9 @@ export const createBulkSales = async (req, res) => {
       if (processedSale.productId) {
         const product = await Product.findOne({ _id: processedSale.productId, userId });
         if (product) {
+          if (processedSale.inventoryId === undefined) {
+            processedSale.inventoryId = product.inventoryId ?? null;
+          }
           product.stock = Math.max(0, product.stock - processedSale.quantity);
           await product.save();
           // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert

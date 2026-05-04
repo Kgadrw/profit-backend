@@ -127,7 +127,33 @@ export const validateProduct = [
     .optional()
     .trim()
     .isLength({ max: 1000 }).withMessage('Description must not exceed 1000 characters'),
+
+  body('inventoryId')
+    .optional({ nullable: true })
+    .custom((value) => {
+      if (value === null || value === '' || value === undefined) return true;
+      const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+      if (!objectIdRegex.test(String(value))) {
+        throw new Error('Invalid inventoryId format');
+      }
+      return true;
+    }),
   
+  handleValidationErrors
+];
+
+// Inventory validation
+export const validateInventory = [
+  body('name')
+    .trim()
+    .notEmpty().withMessage('Inventory name is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Inventory name must be between 1 and 200 characters'),
+
+  body('description')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 }).withMessage('Description must not exceed 1000 characters'),
+
   handleValidationErrors
 ];
 
@@ -153,6 +179,17 @@ export const validateSale = [
   body('productId')
     .optional()
     .isMongoId().withMessage('Invalid product ID format'),
+
+  body('inventoryId')
+    .optional({ nullable: true })
+    .custom((value) => {
+      if (value === null || value === '' || value === undefined) return true;
+      const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+      if (!objectIdRegex.test(String(value))) {
+        throw new Error('Invalid inventoryId format');
+      }
+      return true;
+    }),
   
   body('isService')
     .optional()

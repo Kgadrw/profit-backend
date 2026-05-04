@@ -67,6 +67,13 @@ const productSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  // Optional: group products into a user-owned inventory
+  inventoryId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Inventory',
+    default: null,
+    index: true,
+  },
 }, {
   timestamps: true,
 });
@@ -74,6 +81,7 @@ const productSchema = new mongoose.Schema({
 // Index for faster queries
 productSchema.index({ userId: 1, name: 1 });
 productSchema.index({ userId: 1, category: 1 });
+productSchema.index({ userId: 1, inventoryId: 1, createdAt: -1 });
 
 const Product = mongoose.model('Product', productSchema);
 

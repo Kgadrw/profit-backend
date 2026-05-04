@@ -152,6 +152,8 @@ if (process.env.NODE_ENV === 'development') {
   console.log('  - POST   /api/products');
   console.log('  - GET    /api/sales');
   console.log('  - POST   /api/sales');
+  console.log('  - GET    /api/inventories');
+  console.log('  - POST   /api/inventories');
   console.log('  - GET    /api/schedules');
   console.log('  - POST   /api/schedules');
   console.log('  - GET    /api/clients');
