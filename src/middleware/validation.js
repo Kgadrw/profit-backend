@@ -308,6 +308,62 @@ export const validateExpense = [
   handleValidationErrors
 ];
 
+// Recurring expense validation
+export const validateRecurringExpense = [
+  body('title')
+    .trim()
+    .notEmpty().withMessage('Expense title is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Expense title must be between 1 and 200 characters'),
+
+  body('amount')
+    .notEmpty().withMessage('Expense amount is required')
+    .isFloat({ min: 0 }).withMessage('Expense amount must be a non-negative number'),
+
+  body('category')
+    .optional()
+    .trim()
+    .isLength({ max: 100 }).withMessage('Category must not exceed 100 characters'),
+
+  body('note')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 }).withMessage('Note must not exceed 1000 characters'),
+
+  body('frequency')
+    .optional()
+    .isIn(['weekly', 'monthly', 'yearly', 'custom']).withMessage('Invalid frequency'),
+
+  body('intervalDays')
+    .optional()
+    .isInt({ min: 1, max: 365 }).withMessage('Interval days must be between 1 and 365'),
+
+  body('nextDueDate')
+    .optional()
+    .isISO8601().withMessage('Next due date must be a valid date'),
+
+  body('repeatUntil')
+    .optional()
+    .isISO8601().withMessage('Repeat until must be a valid date'),
+
+  body('autoRecord')
+    .optional()
+    .isBoolean().withMessage('autoRecord must be a boolean'),
+
+  body('notifyEmail')
+    .optional()
+    .isBoolean().withMessage('notifyEmail must be a boolean'),
+
+  body('advanceNotificationDays')
+    .optional()
+    .isInt({ min: 0, max: 30 }).withMessage('Advance notification days must be between 0 and 30'),
+
+  body('active')
+    .optional()
+    .isBoolean().withMessage('active must be a boolean'),
+
+  handleValidationErrors
+];
+
 // MongoDB ObjectId validation - handles both 'id' and 'userId' parameter names
 export const validateObjectId = async (req, res, next) => {
   const id = req.params.id || req.params.userId;

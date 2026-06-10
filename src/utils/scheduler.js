@@ -5,7 +5,15 @@ import User from '../models/User.js';
 import Client from '../models/Client.js';
 import { sendUserScheduleNotification, sendClientScheduleNotification } from './emailService.js';
 import Notification from '../models/Notification.js';
-import { sendMonthlyPaymentReminder } from './emailService.js';
+import { sendMonthlyPaymentReminder, sendRecurringExpenseReminder } from './emailService.js';
+import RecurringExpense from '../models/RecurringExpense.js';
+import {
+  advanceRecurringExpense,
+  createExpenseFromRecurring,
+  daysBetweenDates,
+  normalizeDateStart,
+} from './recurringExpenseUtils.js';
+import Expense from '../models/Expense.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -126,9 +134,11 @@ export const startScheduler = () => {
   // Monthly payment reminders: run daily at 08:00 server time
   cron.schedule('0 8 * * *', async () => {
     await checkAndSendMonthlyPaymentReminders();
+    await checkRecurringExpenses();
   });
   // Also run on startup once
   checkAndSendMonthlyPaymentReminders();
+  checkRecurringExpenses();
 };
 
 const daysBetween = (a, b) => {
@@ -201,5 +211,94 @@ const checkAndSendMonthlyPaymentReminders = async () => {
     }
   } catch (error) {
     console.error('Error in monthly payment reminder check:', error);
+  }
+};
+
+const reminderSentToday = (lastNotifiedAt, stage, lastStage) => {
+  if (!lastNotifiedAt || lastStage !== stage) return false;
+  const last = normalizeDateStart(lastNotifiedAt);
+  const today = normalizeDateStart(new Date());
+  return last.getTime() === today.getTime();
+};
+
+const checkRecurringExpenses = async () => {
+  try {
+    const now = new Date();
+    const today = normalizeDateStart(now);
+
+    const recurringItems = await RecurringExpense.find({ active: true });
+    if (!recurringItems.length) return;
+
+    console.log(`Checking ${recurringItems.length} recurring expenses at ${now.toISOString()}`);
+
+    for (const item of recurringItems) {
+      const dueDate = normalizeDateStart(item.nextDueDate);
+      const diffDays = daysBetweenDates(today, dueDate);
+
+      const user = await User.findById(item.userId);
+      if (!user) {
+        console.error(`User not found for recurring expense ${item._id}`);
+        continue;
+      }
+
+      const shouldSendAdvance =
+        item.notifyEmail &&
+        item.advanceNotificationDays > 0 &&
+        diffDays === item.advanceNotificationDays;
+
+      const shouldSendDue = item.notifyEmail && diffDays === 0;
+      const isOverdue = diffDays < 0;
+
+      if (shouldSendAdvance && !reminderSentToday(item.lastNotifiedAt, 'advance', item.lastReminderStage)) {
+        await sendRecurringExpenseReminder(user, item, { stage: 'advance' });
+        await Notification.create({
+          userId: user._id,
+          sentBy: 'system',
+          type: 'general',
+          title: 'Upcoming expense',
+          body: `${item.title} (${Number(item.amount).toLocaleString()} RWF) is due on ${dueDate.toLocaleDateString()}.`,
+          icon: '/logo.png',
+          data: { kind: 'recurring_expense', recurringId: String(item._id), stage: 'advance' },
+          read: false,
+        });
+        item.lastNotifiedAt = new Date();
+        item.lastReminderStage = 'advance';
+        await item.save();
+        console.log(`✅ Sent advance reminder for recurring expense: ${item.title}`);
+      }
+
+      if ((shouldSendDue || isOverdue) && item.notifyEmail) {
+        if (!reminderSentToday(item.lastNotifiedAt, 'due', item.lastReminderStage)) {
+          await sendRecurringExpenseReminder(user, item, { stage: 'due' });
+          await Notification.create({
+            userId: user._id,
+            sentBy: 'system',
+            type: 'general',
+            title: 'Payment pending',
+            body: `${item.title} (${Number(item.amount).toLocaleString()} RWF) is due. Please complete the payment.`,
+            icon: '/logo.png',
+            data: { kind: 'recurring_expense', recurringId: String(item._id), stage: 'due' },
+            read: false,
+          });
+          item.lastNotifiedAt = new Date();
+          item.lastReminderStage = 'due';
+          await item.save();
+          console.log(`✅ Sent due reminder for recurring expense: ${item.title}`);
+        }
+      }
+
+      if (diffDays <= 0 && item.autoRecord) {
+        await createExpenseFromRecurring(Expense, item, item.userId, item.nextDueDate);
+        await advanceRecurringExpense(item);
+        console.log(`✅ Auto-recorded recurring expense: ${item.title}`);
+      }
+
+      if (isOverdue && !item.autoRecord && !item.notifyEmail) {
+        // Keep overdue items visible; no email configured
+        continue;
+      }
+    }
+  } catch (error) {
+    console.error('Error in recurring expense check:', error);
   }
 };

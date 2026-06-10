@@ -260,7 +260,7 @@ process.on('SIGINT', gracefulShutdown);
 // Initialize WebSocket server
 initializeWebSocket(server);
 
-// Start server
+// Start HTTP server
 server.listen(PORT, async () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📋 API endpoints available at http://localhost:${PORT}/api`);

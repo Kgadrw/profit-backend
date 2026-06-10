@@ -361,6 +361,83 @@ export const sendMonthlyPaymentReminder = async (user, plan, senderUser, context
   });
 };
 
+// Recurring expense payment reminder
+export const sendRecurringExpenseReminder = async (user, recurringExpense, context = {}) => {
+  if (!user?.email) {
+    return { success: false, message: 'User does not have an email address' };
+  }
+
+  const stage = context.stage || 'due';
+  const amount = Number(recurringExpense.amount || 0);
+  const dueDate = recurringExpense.nextDueDate
+    ? new Date(recurringExpense.nextDueDate)
+    : null;
+  const dueText = dueDate
+    ? dueDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    : 'soon';
+
+  const isDueToday = stage === 'due';
+  const subject = isDueToday
+    ? `Payment pending: ${recurringExpense.title} (${amount.toLocaleString()} RWF)`
+    : `Upcoming expense: ${recurringExpense.title} due ${dueText}`;
+
+  const headline = isDueToday ? 'Payment Pending' : 'Upcoming Expense Reminder';
+  const message = isDueToday
+    ? `Your recurring expense "${recurringExpense.title}" of ${amount.toLocaleString()} RWF is due today. Please make the payment and record it in Trippo.`
+    : `Reminder: your recurring expense "${recurringExpense.title}" of ${amount.toLocaleString()} RWF is due on ${dueText}.`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
+      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
+        <tr>
+          <td style="padding: 40px 20px;">
+            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+              ${generateEmailHeader(user)}
+              <tr>
+                <td style="padding: 30px;">
+                  <h2 style="color: #1e293b; margin: 0 0 14px 0; font-size: 22px; font-weight: 600;">${headline}</h2>
+                  <p style="color: #475569; margin: 0 0 18px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
+                  <div style="background-color: ${isDueToday ? '#fef2f2' : '#eff6ff'}; border-left: 4px solid ${isDueToday ? '#ef4444' : '#2563eb'}; padding: 18px; border-radius: 6px; margin: 18px 0;">
+                    <p style="color: #1e293b; margin: 0 0 10px 0; font-size: 15px; line-height: 1.8; font-weight: 500;">${message}</p>
+                    <p style="color: #1e293b; margin: 0; font-size: 15px;"><strong>Amount:</strong> ${amount.toLocaleString()} RWF</p>
+                    ${dueDate ? `<p style="color: #1e293b; margin: 8px 0 0 0; font-size: 15px;"><strong>Due date:</strong> ${dueText}</p>` : ''}
+                    ${recurringExpense.category ? `<p style="color: #1e293b; margin: 8px 0 0 0; font-size: 15px;"><strong>Category:</strong> ${recurringExpense.category}</p>` : ''}
+                  </div>
+                  <p style="color: #64748b; margin: 0; font-size: 13px; line-height: 1.6;">
+                    ${recurringExpense.autoRecord
+                      ? 'This expense will be recorded automatically in Trippo when due.'
+                      : 'Open Trippo → Expenses and tap "Mark paid" after you complete the payment.'}
+                  </p>
+                  <div style="margin-top: 26px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
+                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
+                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+
+  return await sendEmail({
+    to: user.email,
+    subject,
+    text: message,
+    html,
+    fromName: user.businessName || user.name || 'Trippo',
+    fromEmail: user.email || process.env.SMTP_USER,
+  });
+};
+
 // Send completion notification
 export const sendCompletionNotification = async (schedule, senderUser, completionMessage, options = {}) => {
   const { notifyClient = false, notifyUser = false } = options;

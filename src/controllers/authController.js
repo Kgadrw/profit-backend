@@ -137,9 +137,19 @@ export const login = async (req, res) => {
 // Get current user (if you implement session/JWT auth later)
 export const getCurrentUser = async (req, res) => {
   try {
-    // For now, get the first user (for PIN-only system)
-    // In production, you'd get user from JWT/session
-    const user = await User.findOne();
+    if (req.user?.isAdmin) {
+      return res.json({
+        user: {
+          name: 'Admin',
+          email: 'admin',
+          phone: '0000000000',
+          businessName: 'System Administrator',
+          role: 'admin',
+        },
+      });
+    }
+
+    const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -155,9 +165,11 @@ export const updateUser = async (req, res) => {
   try {
     const { name, email, phone, businessName } = req.body;
 
-    // Get the first user (for PIN-only system)
-    // In production, you'd get user from JWT/session
-    const user = await User.findOne();
+    if (req.user?.isAdmin) {
+      return res.status(403).json({ error: 'Admin profile cannot be updated through this endpoint' });
+    }
+
+    const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
