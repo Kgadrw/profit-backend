@@ -11,6 +11,7 @@ import notificationRoutes from './notificationRoutes.js';
 import expenseRoutes from './expenseRoutes.js';
 import recurringExpenseRoutes from './recurringExpenseRoutes.js';
 import inventoryRoutes from './inventoryRoutes.js';
+import subscriptionRoutes from './subscriptionRoutes.js';
 
 const router = express.Router();
 
@@ -26,5 +27,6 @@ router.use('/notifications', notificationRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);
 router.use('/inventories', inventoryRoutes);
+router.use('/subscription', subscriptionRoutes);
 
 export default router;

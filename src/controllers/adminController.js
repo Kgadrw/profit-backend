@@ -8,6 +8,8 @@ import ServerStatus from '../models/ServerStatus.js';
 import { sendEmail } from '../utils/emailService.js';
 import mongoose from 'mongoose';
 import Notification from '../models/Notification.js';
+import SubscriptionPayment from '../models/SubscriptionPayment.js';
+import { applySuccessfulPayment, serializePaymentPlan } from '../utils/paymentPlanUtils.js';
 
 // Helper function to generate email header as table rows for admin emails
 const generateEmailHeaderTable = (senderUser) => {
@@ -109,6 +111,38 @@ export const getAllUsers = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    const userIds = users.map((u) => u._id);
+    const paymentAgg = userIds.length
+      ? await SubscriptionPayment.aggregate([
+          { $match: { userId: { $in: userIds } } },
+          { $sort: { createdAt: -1 } },
+          {
+            $group: {
+              _id: '$userId',
+              lastStatus: { $first: '$status' },
+              lastAttemptAt: { $first: '$createdAt' },
+              lastAmount: { $first: '$amount' },
+              lastMsisdn: { $first: '$msisdn' },
+              provider: { $first: '$provider' },
+              successfulPayments: {
+                $sum: { $cond: [{ $eq: ['$status', 'SUCCESSFUL'] }, 1, 0] },
+              },
+              failedPayments: {
+                $sum: { $cond: [{ $eq: ['$status', 'FAILED'] }, 1, 0] },
+              },
+              pendingPayments: {
+                $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] },
+              },
+              totalPaidAmount: {
+                $sum: { $cond: [{ $eq: ['$status', 'SUCCESSFUL'] }, '$amount', 0] },
+              },
+            },
+          },
+        ])
+      : [];
+
+    const paymentMap = new Map(paymentAgg.map((p) => [String(p._id), p]));
+
     // Import models
     const Service = (await import('../models/Service.js')).default;
 
@@ -158,6 +192,8 @@ export const getAllUsers = async (req, res) => {
           userType = 'Salon Owner';
         }
 
+        const pay = paymentMap.get(String(user._id));
+
         return {
           ...user,
           phone: user.phone || null,
@@ -171,6 +207,20 @@ export const getAllUsers = async (req, res) => {
           serviceSaleCount: serviceStats.count || 0,
           serviceRevenue: serviceStats.totalRevenue || 0,
           serviceProfit: serviceStats.totalProfit || 0,
+          subscription: serializePaymentPlan(user),
+          paymentSummary: pay
+            ? {
+                provider: pay.provider || 'paypack',
+                lastStatus: pay.lastStatus,
+                lastAttemptAt: pay.lastAttemptAt,
+                lastAmount: pay.lastAmount,
+                lastMsisdn: pay.lastMsisdn,
+                successfulPayments: pay.successfulPayments,
+                failedPayments: pay.failedPayments,
+                pendingPayments: pay.pendingPayments,
+                totalPaidAmount: pay.totalPaidAmount,
+              }
+            : null,
         };
       })
     );
@@ -1175,10 +1225,9 @@ export const updateUserPaymentPlan = async (req, res) => {
       plan.nextDueDate = next;
     }
 
-    user.paymentPlan = plan;
-    await user.save();
+    await User.updateOne({ _id: user._id }, { $set: { paymentPlan: plan } });
 
-    res.json({ message: 'Payment plan updated', data: user.paymentPlan });
+    res.json({ message: 'Payment plan updated', data: plan });
   } catch (error) {
     console.error('Update payment plan error:', error);
     res.status(500).json({ error: error.message || 'Failed to update payment plan' });
@@ -1196,46 +1245,11 @@ export const markUserPaid = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const plan = user.paymentPlan || {};
-
-    // Ensure numeric interval and defaults exist
-    const intervalMonths = Math.max(1, Number(plan.intervalMonths || 1) || 1);
-    plan.intervalMonths = intervalMonths;
-    if (plan.amount === undefined || plan.amount === null) plan.amount = 5800;
-    if (!plan.currency) plan.currency = 'RWF';
-    if (plan.active === undefined) plan.active = true;
-
     const paidAt = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
-    plan.lastPaidAt = paidAt;
-    plan.status = 'active';
-    plan.reminderStage = '';
-    plan.lastReminderAt = null;
+    const plan = applySuccessfulPayment(user, paidAt);
+    await User.updateOne({ _id: user._id }, { $set: { paymentPlan: plan } });
 
-    // Ensure startDate exists
-    const startDate = plan.startDate ? new Date(plan.startDate) : (user.createdAt || new Date());
-    plan.startDate = startDate;
-
-    // Compute next due date safely
-    const baseRaw = plan.nextDueDate || plan.startDate || user.createdAt || new Date();
-    let base = new Date(baseRaw);
-    if (Number.isNaN(base.getTime())) {
-      base = new Date();
-    }
-    const next = new Date(base);
-    next.setMonth(next.getMonth() + intervalMonths);
-    if (Number.isNaN(next.getTime())) {
-      // Fallback: startDate + interval
-      const fallback = new Date(startDate);
-      fallback.setMonth(fallback.getMonth() + intervalMonths);
-      plan.nextDueDate = fallback;
-    } else {
-      plan.nextDueDate = next;
-    }
-
-    user.paymentPlan = plan;
-    await user.save();
-
-    res.json({ message: 'Payment marked as paid', data: user.paymentPlan });
+    res.json({ message: 'Payment marked as paid', data: plan });
   } catch (error) {
     console.error('Mark paid error:', error);
     res.status(500).json({ error: error.message || 'Failed to mark paid' });

@@ -46,8 +46,25 @@ export const validateRegister = [
     .optional()
     .trim()
     .isLength({ max: 200 }).withMessage('Business name must not exceed 200 characters'),
+
+  body('otp')
+    .trim()
+    .notEmpty().withMessage('Email verification code is required')
+    .isLength({ min: 6, max: 6 }).withMessage('Verification code must be exactly 6 digits')
+    .matches(/^\d{6}$/).withMessage('Verification code must contain only digits'),
   
   handleValidationErrors
+];
+
+// Send registration OTP validation
+export const validateSendRegistrationOtp = [
+  body('email')
+    .trim()
+    .notEmpty().withMessage('Email is required')
+    .isEmail().withMessage('Please provide a valid email address')
+    .normalizeEmail(),
+
+  handleValidationErrors,
 ];
 
 // User login validation

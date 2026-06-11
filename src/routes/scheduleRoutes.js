@@ -12,11 +12,13 @@ import {
 import { apiLimiter } from '../middleware/security.js';
 import { validateObjectId } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
+import { requirePlusAccess } from '../middleware/requirePlusAccess.js';
 
 const router = express.Router();
 
 // All schedule routes require authentication and rate limiting
 router.use(authenticateUser);
+router.use(requirePlusAccess);
 router.use(apiLimiter);
 
 router.get('/upcoming', getUpcomingSchedules);

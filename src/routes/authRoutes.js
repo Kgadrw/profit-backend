@@ -1,11 +1,14 @@
 // Authentication Routes
 import express from 'express';
-import { register, login, getCurrentUser, updateUser, changePin, deleteAccount, forgotPin, resetPin, checkEmail, verifyTicket } from '../controllers/authController.js';
+import { register, sendRegistrationOtp, login, getCurrentUser, updateUser, changePin, deleteAccount, forgotPin, resetPin, checkEmail, verifyTicket } from '../controllers/authController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
-import { validateRegister, validateLogin } from '../middleware/validation.js';
+import { validateRegister, validateLogin, validateSendRegistrationOtp } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Registration email verification
+router.post('/register/send-otp', rateLimiters.otp, validateSendRegistrationOtp, sendRegistrationOtp);
 
 // Register a new user (with rate limiting and validation)
 router.post('/register', rateLimiters.auth, validateRegister, register);

@@ -13,7 +13,9 @@ import {
   daysBetweenDates,
   normalizeDateStart,
 } from './recurringExpenseUtils.js';
+import { getTrialEndsAt, isOnTrial } from './paymentPlanUtils.js';
 import Expense from '../models/Expense.js';
+import { reconcileStuckSubscriptionPayments } from '../controllers/subscriptionController.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -139,6 +141,20 @@ export const startScheduler = () => {
   // Also run on startup once
   checkAndSendMonthlyPaymentReminders();
   checkRecurringExpenses();
+
+  // Reconcile stuck subscription payments every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      await reconcileStuckSubscriptionPayments();
+    } catch (error) {
+      console.error('Error reconciling stuck subscription payments:', error);
+    }
+  });
+  setTimeout(() => {
+    reconcileStuckSubscriptionPayments().catch((error) => {
+      console.error('Startup subscription payment reconcile failed:', error);
+    });
+  }, 15000);
 };
 
 const daysBetween = (a, b) => {
@@ -157,6 +173,21 @@ const checkAndSendMonthlyPaymentReminders = async () => {
     for (const u of users) {
       const plan = u.paymentPlan || {};
       if (plan.active === false || plan.status === 'paused') continue;
+
+      // Mark past_due when 7-day trial ends without payment
+      if (!isOnTrial(u) && !plan.lastPaidAt && plan.status !== 'past_due') {
+        const trialEnd = getTrialEndsAt(u);
+        trialEnd.setHours(0, 0, 0, 0);
+        if (now.getTime() >= trialEnd.getTime()) {
+          await User.updateOne(
+            { _id: u._id },
+            { $set: { 'paymentPlan.status': 'past_due', 'paymentPlan.nextDueDate': trialEnd } },
+          );
+          plan.status = 'past_due';
+        }
+      }
+
+      if (isOnTrial(u)) continue;
 
       const startDate = plan.startDate ? new Date(plan.startDate) : new Date(u.createdAt || Date.now());
       const nextDue = plan.nextDueDate ? new Date(plan.nextDueDate) : (() => {
@@ -189,7 +220,7 @@ const checkAndSendMonthlyPaymentReminders = async () => {
         sentBy: 'system',
         type: 'general',
         title: 'Payment reminder',
-        body: `Your monthly payment of ${(plan.amount || 5800).toLocaleString()} ${(plan.currency || 'RWF')} is due on ${nextDue.toLocaleDateString()}.`,
+        body: `Your monthly payment of ${(plan.amount || 5000).toLocaleString()} ${(plan.currency || 'RWF')} is due on ${nextDue.toLocaleDateString()}.`,
         icon: '/logo.png',
         data: { kind: 'billing', stage, dueDate: nextDue.toISOString() },
         read: false,

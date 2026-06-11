@@ -7,6 +7,7 @@ import apiRoutes from './routes/index.js';
 import { connectDatabase } from './config/database.js';
 import { trackApiRequest } from './middleware/apiTracker.js';
 import { securityHeaders, sanitizeData, requestSizeLimit } from './middleware/security.js';
+import { paypackWebhook } from './controllers/subscriptionController.js';
 import { startScheduler } from './utils/scheduler.js';
 import { initializeWebSocket } from './utils/websocket.js';
 import ServerStatus from './models/ServerStatus.js';
@@ -120,6 +121,14 @@ const corsOptions = {
   exposedHeaders: ['Content-Length', 'X-Request-Id']
 };
 app.use(cors(corsOptions));
+
+// Paypack webhook — HEAD ping + POST payload (raw body for signature verification)
+app.head('/api/subscription/webhook/paypack', paypackWebhook);
+app.post(
+  '/api/subscription/webhook/paypack',
+  express.raw({ type: 'application/json', limit: requestSizeLimit.json.limit }),
+  paypackWebhook,
+);
 
 // Body parsing with size limits
 app.use(express.json(requestSizeLimit.json));

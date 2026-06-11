@@ -49,18 +49,25 @@ const userSchema = new mongoose.Schema({
   pin: {
     type: String,
     required: [true, 'PIN is required'],
-    minlength: 4,
-    maxlength: 4,
+    validate: {
+      validator(v) {
+        // Plain 4-digit PIN before hash, or bcrypt hash after save
+        return /^\d{4}$/.test(v) || /^\$2[aby]\$\d{2}\$.{53}$/.test(v);
+      },
+      message: 'PIN must be 4 digits',
+    },
   },
 
   // Monthly payment plan (admin-managed)
   paymentPlan: {
     active: { type: Boolean, default: true },
-    amount: { type: Number, default: 5800 }, // RWF per month
+    planName: { type: String, default: 'Plus' },
+    amount: { type: Number, default: 10000 }, // RWF per month
     currency: { type: String, default: 'RWF' },
     intervalMonths: { type: Number, default: 1 },
     startDate: { type: Date, default: null }, // when plan starts (defaults to createdAt)
-    nextDueDate: { type: Date, default: null }, // computed from startDate/lastPaidAt
+    trialEndsAt: { type: Date, default: null }, // 7-day trial from account creation
+    nextDueDate: { type: Date, default: null }, // first due after trial, then monthly
     lastPaidAt: { type: Date, default: null },
     status: { type: String, enum: ['active', 'past_due', 'paused'], default: 'active' },
     lastReminderAt: { type: Date, default: null },

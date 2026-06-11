@@ -4,18 +4,120 @@ import OTP from '../models/OTP.js';
 import { sendEmail } from '../utils/emailService.js';
 import Sale from '../models/Sale.js';
 import mongoose from 'mongoose';
+import { SUBSCRIPTION_AMOUNT } from '../utils/paymentPlanUtils.js';
+
+function buildOtpEmailHtml({ title, greeting, bodyText, otpCode }) {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
+      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
+        <tr>
+          <td style="padding: 40px 20px;">
+            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+              <tr>
+                <td style="background-color: #ffffff; padding: 30px; text-align: center;">
+                  <h1 style="color: #1e293b; margin: 0 0 20px 0; font-size: 24px; font-weight: 600;">${title}</h1>
+                  <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">${greeting}</p>
+                  <p style="color: #475569; margin: 0 0 30px 0; font-size: 16px; line-height: 1.6;">${bodyText}</p>
+                  <div style="background-color: #eff6ff; border: 2px solid #2563eb; border-radius: 8px; padding: 20px; margin: 30px 0;">
+                    <p style="color: #1e293b; margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Your verification code</p>
+                    <p style="color: #2563eb; margin: 0; font-size: 32px; font-weight: 700; letter-spacing: 8px; font-family: monospace;">${otpCode}</p>
+                  </div>
+                  <p style="color: #64748b; margin: 20px 0 0 0; font-size: 14px; line-height: 1.6;">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
+                  <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
+                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
+                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+}
+
+async function createAndSendOtp({ email, purpose, subject, title, greeting, bodyText, textPrefix }) {
+  const normalizedEmail = email.toLowerCase().trim();
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+  await OTP.deleteMany({ email: normalizedEmail, purpose });
+
+  const otp = new OTP({
+    email: normalizedEmail,
+    otp: otpCode,
+    purpose,
+    expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+  });
+  await otp.save();
+
+  const emailResult = await sendEmail({
+    to: normalizedEmail,
+    subject,
+    text: `${textPrefix} ${otpCode}. This code will expire in 10 minutes.`,
+    html: buildOtpEmailHtml({ title, greeting, bodyText, otpCode }),
+    fromName: 'Trippo',
+  });
+
+  if (!emailResult.success) {
+    console.error(`Failed to send ${purpose} OTP email:`, emailResult.error);
+  }
+
+  return otpCode;
+}
+
+export const sendRegistrationOtp = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    await createAndSendOtp({
+      email: normalizedEmail,
+      purpose: 'registration',
+      subject: 'Verify your email - Trippo',
+      title: 'Verify your email',
+      greeting: 'Hello,',
+      bodyText: 'Use the verification code below to complete your Trippo account registration:',
+      textPrefix: 'Your Trippo email verification code is:',
+    });
+
+    res.json({
+      message: 'A verification code has been sent to your email.',
+    });
+  } catch (error) {
+    console.error('Send registration OTP error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send verification code' });
+  }
+};
 
 export const register = async (req, res) => {
   try {
-    const { name, email, phone, pin, businessName, role } = req.body;
+    const { name, email, phone, pin, businessName, role, otp } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
 
     // Validation
-    if (!name || !pin || !email || !phone) {
-      return res.status(400).json({ error: 'Name, email, phone, and PIN are required' });
+    if (!name || !pin || !email || !phone || !otp) {
+      return res.status(400).json({ error: 'Name, email, phone, PIN, and verification code are required' });
     }
 
     if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
       return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
+    }
+
+    if (otp.length !== 6 || !/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ error: 'Verification code must be exactly 6 digits' });
     }
 
     // Validate role
@@ -25,42 +127,62 @@ export const register = async (req, res) => {
     }
 
     // Check if user already exists by email
-    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ error: 'User with this email already exists' });
     }
 
+    const otpRecord = await OTP.findValidOTP(normalizedEmail, otp, 'registration');
+    if (!otpRecord) {
+      const existingOTP = await OTP.findOne({
+        email: normalizedEmail,
+        otp,
+        purpose: 'registration',
+        used: false,
+      });
+      if (existingOTP) {
+        await existingOTP.incrementAttempts();
+      }
+      return res.status(400).json({ error: 'Invalid or expired verification code' });
+    }
+
+    await otpRecord.markAsUsed();
+
     // Create new user
     const userData = {
       name,
-      email: email.toLowerCase().trim(),
+      email: normalizedEmail,
       phone: phone.trim(),
       businessName: userRole === 'salon_owner' ? undefined : undefined, // Always leave blank - user sets it in settings
       role: userRole,
       pin,
       paymentPlan: {
         active: true,
-        amount: 5800,
+        planName: 'Plus',
+        amount: SUBSCRIPTION_AMOUNT,
         currency: 'RWF',
         intervalMonths: 1,
-        // startDate/nextDueDate will be set after save when createdAt exists
+        // startDate/trialEndsAt/nextDueDate set after save when createdAt exists
       }
     };
 
     const user = new User(userData);
     await user.save();
 
-    // Initialize billing dates based on join date (createdAt)
+    // 7-day Plus trial from account creation; first payment due when trial ends
     const startDate = user.createdAt || new Date();
-    const next = new Date(startDate);
-    next.setMonth(next.getMonth() + 1);
+    const trialEndsAt = new Date(startDate);
+    trialEndsAt.setDate(trialEndsAt.getDate() + 7);
     user.paymentPlan = {
       ...(user.paymentPlan || {}),
       startDate,
-      nextDueDate: next,
+      trialEndsAt,
+      nextDueDate: trialEndsAt,
       status: 'active',
     };
     await user.save();
+
+    await OTP.deleteMany({ email: normalizedEmail, purpose: 'registration' });
 
     // Return user without PIN
     const userResponse = user.toJSON();
@@ -361,72 +483,15 @@ export const forgotPin = async (req, res) => {
       });
     }
 
-    // Generate 6-digit OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // Delete any existing OTPs for this email
-    await OTP.deleteMany({ email: email.toLowerCase().trim() });
-
-    // Create new OTP
-    const otp = new OTP({
-      email: email.toLowerCase().trim(),
-      otp: otpCode,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-    });
-    await otp.save();
-
-    // Send OTP email
-    const emailHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-          <tr>
-            <td style="padding: 40px 20px;">
-              <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                <tr>
-                  <td style="background-color: #ffffff; padding: 30px; text-align: center;">
-                    <h1 style="color: #1e293b; margin: 0 0 20px 0; font-size: 24px; font-weight: 600;">PIN Reset Request</h1>
-                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
-                    <p style="color: #475569; margin: 0 0 30px 0; font-size: 16px; line-height: 1.6;">You requested to reset your PIN. Use the OTP code below to verify your identity:</p>
-                    
-                    <div style="background-color: #eff6ff; border: 2px solid #2563eb; border-radius: 8px; padding: 20px; margin: 30px 0;">
-                      <p style="color: #1e293b; margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Your OTP Code</p>
-                      <p style="color: #2563eb; margin: 0; font-size: 32px; font-weight: 700; letter-spacing: 8px; font-family: monospace;">${otpCode}</p>
-                    </div>
-                    
-                    <p style="color: #64748b; margin: 20px 0 0 0; font-size: 14px; line-height: 1.6;">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
-                    
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                      <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                      <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `;
-
-    const emailResult = await sendEmail({
-      to: user.email,
+    await createAndSendOtp({
+      email: user.email,
+      purpose: 'pin_reset',
       subject: 'PIN Reset OTP - Trippo',
-      text: `Your PIN reset OTP is: ${otpCode}. This code will expire in 10 minutes.`,
-      html: emailHtml,
-      fromName: 'Trippo',
+      title: 'PIN Reset Request',
+      greeting: `Hello ${user.name},`,
+      bodyText: 'You requested to reset your PIN. Use the verification code below to verify your identity:',
+      textPrefix: 'Your PIN reset OTP is:',
     });
-
-    if (!emailResult.success) {
-      console.error('Failed to send OTP email:', emailResult.error);
-      // Still return success to user (don't reveal email service issues)
-    }
 
     // Always return success message (security: don't reveal if user exists)
     res.json({
@@ -502,12 +567,13 @@ export const resetPin = async (req, res) => {
     }
 
     // Find valid OTP
-    const otpRecord = await OTP.findValidOTP(email.toLowerCase().trim(), otp);
+    const otpRecord = await OTP.findValidOTP(email.toLowerCase().trim(), otp, 'pin_reset');
     if (!otpRecord) {
       // Increment attempts for any existing OTP
       const existingOTP = await OTP.findOne({
         email: email.toLowerCase().trim(),
         otp,
+        purpose: 'pin_reset',
         used: false,
       });
       if (existingOTP) {
@@ -523,8 +589,8 @@ export const resetPin = async (req, res) => {
     user.pin = newPin;
     await user.save();
 
-    // Delete all OTPs for this email
-    await OTP.deleteMany({ email: email.toLowerCase().trim() });
+    // Delete all PIN reset OTPs for this email
+    await OTP.deleteMany({ email: email.toLowerCase().trim(), purpose: 'pin_reset' });
 
     res.json({
       message: 'PIN reset successfully. You can now login with your new PIN.',

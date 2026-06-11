@@ -19,6 +19,13 @@ import {
   updateUserPaymentPlan,
   markUserPaid,
 } from '../controllers/adminController.js';
+import {
+  getAdminSubscriptionPaymentStats,
+  listAdminSubscriptionPayments,
+  getAdminSubscriptionPayment,
+  resyncAdminSubscriptionPayment,
+  reconcileAdminSubscriptionPayments,
+} from '../controllers/adminSubscriptionController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateObjectId } from '../middleware/validation.js';
 import { authenticateAdmin } from '../middleware/auth.js';
@@ -77,5 +84,12 @@ router.get('/notifications', getAdminNotificationHistory);
 // Payment plan management
 router.put('/users/:userId/payment-plan', validateObjectId, updateUserPaymentPlan);
 router.post('/users/:userId/mark-paid', validateObjectId, markUserPaid);
+
+// Subscription payment support
+router.get('/subscription-payments/stats', getAdminSubscriptionPaymentStats);
+router.post('/subscription-payments/reconcile', reconcileAdminSubscriptionPayments);
+router.get('/subscription-payments', listAdminSubscriptionPayments);
+router.get('/subscription-payments/:paymentId', validateObjectId, getAdminSubscriptionPayment);
+router.post('/subscription-payments/:paymentId/resync', validateObjectId, resyncAdminSubscriptionPayment);
 
 export default router;

@@ -9,12 +9,14 @@ import {
   clearAll,
 } from '../controllers/notificationController.js';
 import { authenticateUser } from '../middleware/auth.js';
+import { requirePlusAccess } from '../middleware/requirePlusAccess.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
 
 // All notification routes require authentication
 router.use(authenticateUser);
+router.use(requirePlusAccess);
 router.use(rateLimiters.products); // Reuse products rate limiter
 
 router.get('/', getNotifications);

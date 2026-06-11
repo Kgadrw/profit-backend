@@ -13,6 +13,12 @@ const otpSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  purpose: {
+    type: String,
+    enum: ['pin_reset', 'registration'],
+    default: 'pin_reset',
+    index: true,
+  },
   expiresAt: {
     type: Date,
     required: true,
@@ -32,11 +38,18 @@ const otpSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Find valid OTP
-otpSchema.statics.findValidOTP = async function(email, otp) {
+// Find valid OTP (purpose: pin_reset | registration)
+otpSchema.statics.findValidOTP = async function(email, otp, purpose = 'pin_reset') {
+  const normalizedEmail = email.toLowerCase().trim();
+  const purposeFilter =
+    purpose === 'pin_reset'
+      ? { $or: [{ purpose: 'pin_reset' }, { purpose: { $exists: false } }] }
+      : { purpose };
+
   return await this.findOne({
-    email: email.toLowerCase().trim(),
+    email: normalizedEmail,
     otp,
+    ...purposeFilter,
     used: false,
     expiresAt: { $gt: new Date() },
     attempts: { $lt: 5 },
