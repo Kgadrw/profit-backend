@@ -5,6 +5,7 @@ import { sendEmail } from '../utils/emailService.js';
 import Sale from '../models/Sale.js';
 import mongoose from 'mongoose';
 import { SUBSCRIPTION_AMOUNT } from '../utils/paymentPlanUtils.js';
+import { tryAdminLogin } from '../utils/platformSettings.js';
 
 function buildOtpEmailHtml({ title, greeting, bodyText, otpCode }) {
   return `
@@ -202,7 +203,6 @@ export const login = async (req, res) => {
   try {
     const { pin, email } = req.body;
     const normalizedEmail = email ? email.toLowerCase().trim() : '';
-    const adminAliases = new Set(['admin', 'admin@trippo.rw', 'admin@trippo.com']);
 
     // Validation
     if (!pin || !email) {
@@ -213,8 +213,8 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
     }
 
-    // Check for admin login (supports common aliases)
-    if (adminAliases.has(normalizedEmail) && pin === '2026') {
+    // Check for admin login (DB-backed credentials + legacy aliases)
+    if (await tryAdminLogin(normalizedEmail, pin)) {
       return res.json({
         message: 'Admin login successful',
         user: {
@@ -227,6 +227,8 @@ export const login = async (req, res) => {
         isAdmin: true,
       });
     }
+
+    // Legacy fallback removed — admin credentials live in platform settings
 
     // Find user by email (email is now required)
     const user = await User.findOne({ email: normalizedEmail });

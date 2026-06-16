@@ -281,15 +281,24 @@ export const getUserActivity = async (req, res) => {
 // Get API call statistics
 export const getApiStats = async (req, res) => {
   try {
-    const { getApiRequestStats, getLiveApiRequests } = await import('../middleware/apiTracker.js');
+    const {
+      getApiRequestStats,
+      getLiveApiRequests,
+      getRecentErrors,
+      getEndpointHealth,
+    } = await import('../middleware/apiTracker.js');
     const apiStats = getApiRequestStats();
     const liveRequests = getLiveApiRequests(100);
+    const recentErrors = getRecentErrors(50);
+    const endpointHealth = getEndpointHealth();
 
-    res.json({ 
+    res.json({
       data: {
         ...apiStats,
         liveRequests,
-      }
+        recentErrors,
+        endpointHealth,
+      },
     });
   } catch (error) {
     console.error('Get API stats error:', error);
@@ -300,6 +309,16 @@ export const getApiStats = async (req, res) => {
 // Get system health
 export const getSystemHealth = async (req, res) => {
   try {
+    const { getApiRequestStats } = await import('../middleware/apiTracker.js');
+    const apiStats = getApiRequestStats();
+    const errorSummary = apiStats.errorSummary || {
+      totalErrors24h: 0,
+      clientErrors24h: 0,
+      serverErrors24h: 0,
+      failingEndpoints: 0,
+      slowEndpoints: 0,
+    };
+
     // Check database connection
     let databaseStatus = 'connected';
     try {
@@ -308,12 +327,107 @@ export const getSystemHealth = async (req, res) => {
       databaseStatus = 'disconnected';
     }
 
+    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const stuckBefore = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    const [failedPayments24h, paymentsWithSyncIssues, stuckPayments] = await Promise.all([
+      SubscriptionPayment.countDocuments({ status: 'FAILED', updatedAt: { $gte: last24h } }),
+      SubscriptionPayment.countDocuments({
+        'syncIssues.0': { $exists: true },
+      }),
+      SubscriptionPayment.countDocuments({
+        status: 'PENDING',
+        createdAt: { $lt: stuckBefore },
+      }),
+    ]);
+
+    const memoryUsed = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    const memoryTotal = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
+    const memoryPercent = memoryTotal > 0 ? Math.round((memoryUsed / memoryTotal) * 100) : 0;
+
+    let platformStatus = 'healthy';
+    if (databaseStatus !== 'connected' || errorSummary.serverErrors24h > 0) {
+      platformStatus = 'critical';
+    } else if (
+      errorSummary.totalErrors24h > 10
+      || errorSummary.failingEndpoints > 0
+      || failedPayments24h > 0
+      || paymentsWithSyncIssues > 0
+      || stuckPayments > 0
+      || memoryPercent >= 90
+    ) {
+      platformStatus = 'degraded';
+    }
+
+    const checks = [
+      {
+        id: 'database',
+        label: 'Database',
+        status: databaseStatus === 'connected' ? 'ok' : 'error',
+        detail: databaseStatus === 'connected' ? 'MongoDB reachable' : 'Cannot reach MongoDB',
+      },
+      {
+        id: 'api_errors',
+        label: 'API errors (24h)',
+        status: errorSummary.serverErrors24h > 0
+          ? 'error'
+          : errorSummary.totalErrors24h > 10
+            ? 'warning'
+            : 'ok',
+        detail: `${errorSummary.totalErrors24h} total (${errorSummary.clientErrors24h} client, ${errorSummary.serverErrors24h} server)`,
+      },
+      {
+        id: 'endpoints',
+        label: 'Failing endpoints',
+        status: errorSummary.failingEndpoints > 0 ? 'warning' : 'ok',
+        detail: errorSummary.failingEndpoints > 0
+          ? `${errorSummary.failingEndpoints} endpoint(s) returned errors`
+          : 'All tracked endpoints healthy',
+      },
+      {
+        id: 'response_time',
+        label: 'Slow endpoints',
+        status: errorSummary.slowEndpoints > 0 ? 'warning' : 'ok',
+        detail: errorSummary.slowEndpoints > 0
+          ? `${errorSummary.slowEndpoints} endpoint(s) avg > 2s`
+          : 'Response times within normal range',
+      },
+      {
+        id: 'payments_failed',
+        label: 'Failed payments (24h)',
+        status: failedPayments24h > 5 ? 'error' : failedPayments24h > 0 ? 'warning' : 'ok',
+        detail: `${failedPayments24h} failed in the last 24 hours`,
+      },
+      {
+        id: 'payments_sync',
+        label: 'Payment sync issues',
+        status: paymentsWithSyncIssues > 0 ? 'warning' : 'ok',
+        detail: paymentsWithSyncIssues > 0
+          ? `${paymentsWithSyncIssues} payment(s) need attention`
+          : 'No sync issues detected',
+      },
+      {
+        id: 'payments_stuck',
+        label: 'Stuck pending payments',
+        status: stuckPayments > 0 ? 'warning' : 'ok',
+        detail: stuckPayments > 0
+          ? `${stuckPayments} pending over 2 hours`
+          : 'No stuck payments',
+      },
+      {
+        id: 'memory',
+        label: 'Server memory',
+        status: memoryPercent >= 90 ? 'error' : memoryPercent >= 75 ? 'warning' : 'ok',
+        detail: `${memoryUsed} MB / ${memoryTotal} MB (${memoryPercent}%)`,
+      },
+    ];
+
     // Get server status history (last 3 months)
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-    
+
     const statusHistory = await ServerStatus.find({
-      timestamp: { $gte: threeMonthsAgo }
+      timestamp: { $gte: threeMonthsAgo },
     })
       .sort({ timestamp: 1 })
       .select('status timestamp')
@@ -325,10 +439,22 @@ export const getSystemHealth = async (req, res) => {
       uptime: process.uptime(),
       serverStartTime: new Date(Date.now() - (process.uptime() * 1000)).toISOString(),
       memory: {
-        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        used: memoryUsed,
+        total: memoryTotal,
       },
       statusHistory: statusHistory || [],
+      platform: {
+        status: platformStatus,
+        environment: process.env.NODE_ENV || 'development',
+        nodeVersion: process.version,
+        checks,
+        payments: {
+          failed24h: failedPayments24h,
+          withSyncIssues: paymentsWithSyncIssues,
+          stuckPending: stuckPayments,
+        },
+        api: errorSummary,
+      },
     };
 
     res.json({ data: health });

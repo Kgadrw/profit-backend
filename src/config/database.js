@@ -2,6 +2,7 @@
 import dns from 'node:dns';
 import mongoose from 'mongoose';
 import 'dotenv/config';
+import { initPlatformSettings } from '../utils/platformSettings.js';
 
 const PUBLIC_DNS = ['8.8.8.8', '8.8.4.4', '1.1.1.1'];
 
@@ -67,6 +68,7 @@ export const connectDatabase = async () => {
     const conn = await mongoose.connect(MONGODB_URI, connectOptions);
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     console.log(`📊 Database: ${conn.connection.name}`);
+    await initPlatformSettings();
     return conn;
   } catch (error) {
     const configuredDns = getDnsServersFromEnv();
@@ -82,6 +84,7 @@ export const connectDatabase = async () => {
         const conn = await mongoose.connect(MONGODB_URI, connectOptions);
         console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
         console.log(`📊 Database: ${conn.connection.name}`);
+        await initPlatformSettings();
         return conn;
       } catch (retryError) {
         logConnectionHints(retryError);

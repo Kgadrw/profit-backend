@@ -1,10 +1,12 @@
+import { getSubscriptionAmount, getTrialDays } from './platformSettings.js';
+
 export const TRIAL_DAYS = 7;
 export const SUBSCRIPTION_AMOUNT = Number(process.env.SUBSCRIPTION_AMOUNT || 10000);
+
 const LEGACY_SUBSCRIPTION_AMOUNT = 5000;
 
 export function resolveSubscriptionAmount(_plan = {}) {
-  // .env SUBSCRIPTION_AMOUNT is the charge amount (override stored plan for testing/production toggles)
-  return SUBSCRIPTION_AMOUNT;
+  return getSubscriptionAmount();
 }
 
 export function getTrialEndsAt(user) {
@@ -12,7 +14,7 @@ export function getTrialEndsAt(user) {
   if (plan.trialEndsAt) return new Date(plan.trialEndsAt);
   const start = plan.startDate ? new Date(plan.startDate) : new Date(user.createdAt || Date.now());
   const end = new Date(start);
-  end.setDate(end.getDate() + TRIAL_DAYS);
+  end.setDate(end.getDate() + getTrialDays());
   return end;
 }
 

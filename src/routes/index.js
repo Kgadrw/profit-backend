@@ -13,6 +13,7 @@ import recurringExpenseRoutes from './recurringExpenseRoutes.js';
 import inventoryRoutes from './inventoryRoutes.js';
 import subscriptionRoutes from './subscriptionRoutes.js';
 import bookingRoutes from './bookingRoutes.js';
+import contentRoutes from './contentRoutes.js';
 
 const router = express.Router();
 
@@ -30,5 +31,6 @@ router.use('/recurring-expenses', recurringExpenseRoutes);
 router.use('/inventories', inventoryRoutes);
 router.use('/subscription', subscriptionRoutes);
 router.use('/bookings', bookingRoutes);
+router.use('/content', contentRoutes);
 
 export default router;

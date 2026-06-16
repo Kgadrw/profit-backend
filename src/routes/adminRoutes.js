@@ -26,6 +26,14 @@ import {
   resyncAdminSubscriptionPayment,
   reconcileAdminSubscriptionPayments,
 } from '../controllers/adminSubscriptionController.js';
+import {
+  getAdminPlatformSettings,
+  updateAdminPlatformSettings,
+} from '../controllers/adminPlatformSettingsController.js';
+import {
+  getAdminHomepage,
+  updateAdminHomepage,
+} from '../controllers/homepageController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateObjectId } from '../middleware/validation.js';
 import { authenticateAdmin } from '../middleware/auth.js';
@@ -91,5 +99,13 @@ router.post('/subscription-payments/reconcile', reconcileAdminSubscriptionPaymen
 router.get('/subscription-payments', listAdminSubscriptionPayments);
 router.get('/subscription-payments/:paymentId', validateObjectId, getAdminSubscriptionPayment);
 router.post('/subscription-payments/:paymentId/resync', validateObjectId, resyncAdminSubscriptionPayment);
+
+// Homepage CMS
+router.get('/homepage', getAdminHomepage);
+router.put('/homepage', updateAdminHomepage);
+
+// Platform settings (admin credentials, subscription amount, etc.)
+router.get('/platform-settings', getAdminPlatformSettings);
+router.put('/platform-settings', updateAdminPlatformSettings);
 
 export default router;
