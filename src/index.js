@@ -8,6 +8,7 @@ import { connectDatabase } from './config/database.js';
 import { trackApiRequest } from './middleware/apiTracker.js';
 import { securityHeaders, sanitizeData, requestSizeLimit } from './middleware/security.js';
 import { paypackWebhook } from './controllers/subscriptionController.js';
+import { logPaypackStartupWarnings } from './utils/paypack.js';
 import { startScheduler } from './utils/scheduler.js';
 import { initializeWebSocket } from './utils/websocket.js';
 import ServerStatus from './models/ServerStatus.js';
@@ -165,6 +166,8 @@ if (process.env.NODE_ENV === 'development') {
   console.log('  - POST   /api/inventories');
   console.log('  - GET    /api/schedules');
   console.log('  - POST   /api/schedules');
+  console.log('  - GET    /api/bookings');
+  console.log('  - POST   /api/bookings');
   console.log('  - GET    /api/clients');
   console.log('  - POST   /api/clients');
   console.log('  - GET    /api/services');
@@ -202,6 +205,7 @@ app.use((req, res) => {
       '/api/products',
       '/api/sales',
       '/api/schedules',
+      '/api/bookings',
       '/api/clients',
       '/api/services',
       '/api/auth/login',
@@ -274,7 +278,8 @@ server.listen(PORT, async () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📋 API endpoints available at http://localhost:${PORT}/api`);
   console.log(`🔌 WebSocket server available at ws://localhost:${PORT}/ws`);
-  
+  logPaypackStartupWarnings();
+
   // Start schedule notification scheduler
   startScheduler();
   

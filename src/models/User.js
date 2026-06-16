@@ -69,6 +69,7 @@ const userSchema = new mongoose.Schema({
     trialEndsAt: { type: Date, default: null }, // 7-day trial from account creation
     nextDueDate: { type: Date, default: null }, // first due after trial, then monthly
     lastPaidAt: { type: Date, default: null },
+    cancelledAt: { type: Date, default: null },
     status: { type: String, enum: ['active', 'past_due', 'paused'], default: 'active' },
     lastReminderAt: { type: Date, default: null },
     reminderStage: { type: String, default: '' }, // e.g. 'due_3', 'due_0', 'overdue_7'

@@ -3,10 +3,11 @@ import crypto from 'crypto';
 const BASE_URL = (process.env.PAYPACK_BASE_URL || 'https://payments.paypack.rw/api').replace(/\/$/, '');
 const CLIENT_ID = process.env.PAYPACK_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET || '';
-const WEBHOOK_MODE = process.env.PAYPACK_WEBHOOK_MODE || 'development';
+const WEBHOOK_MODE = (process.env.PAYPACK_WEBHOOK_MODE || 'production').toLowerCase();
 const WEBHOOK_SIGN_KEY = process.env.PAYPACK_WEBHOOK_SIGN_KEY || '';
 
 let tokenCache = { access: null, refresh: null, expiresAt: 0 };
+let developmentModeWarningLogged = false;
 
 export function isPaypackConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
@@ -20,6 +21,22 @@ export function isPaymentConfigured() {
   return isPaypackConfigured() || isMockPaymentsEnabled();
 }
 
+export function getWebhookMode() {
+  return WEBHOOK_MODE;
+}
+
+export function logPaypackStartupWarnings() {
+  if (!isPaypackConfigured() || isMockPaymentsEnabled()) return;
+  if (WEBHOOK_MODE === 'development') {
+    console.warn(
+      '[Paypack] PAYPACK_WEBHOOK_MODE=development — real MoMo USSD prompts are usually NOT sent. ' +
+        'Set PAYPACK_WEBHOOK_MODE=production for live customer payments.',
+    );
+  } else {
+    console.log(`[Paypack] Using webhook mode: ${WEBHOOK_MODE} (real MoMo prompts enabled)`);
+  }
+}
+
 export function getPaymentPublicConfig() {
   const mock = isMockPaymentsEnabled();
   return {
@@ -30,6 +47,7 @@ export function getPaymentPublicConfig() {
     amount: Number(process.env.SUBSCRIPTION_AMOUNT || 10000),
     displayCurrency: 'RWF',
     webhookMode: WEBHOOK_MODE,
+    livePrompts: WEBHOOK_MODE === 'production',
   };
 }
 
@@ -140,6 +158,14 @@ export async function getAccessToken() {
 }
 
 export async function cashin({ amount, number, idempotencyKey }) {
+  if (WEBHOOK_MODE === 'development' && !developmentModeWarningLogged) {
+    developmentModeWarningLogged = true;
+    console.warn(
+      '[Paypack] Cashin in development mode — customer may not receive a MoMo prompt. ' +
+        'Use PAYPACK_WEBHOOK_MODE=production for real payments.',
+    );
+  }
+
   const token = await getAccessToken();
   const headers = {
     Accept: 'application/json',
@@ -263,44 +289,19 @@ function flattenPaypackRows(payload) {
   return rows;
 }
 
-/**
- * Match a local pending payment to a successful Paypack transaction.
- * Prefers exact ref; fallback is phone+amount+time only when ref is absent or matches this payment.
- */
+/** Match only by exact Paypack ref — never phone+amount (avoids false credits). */
 export function findMatchingSuccessfulTransaction(payment, payload, { blockedRefs = new Set() } = {}) {
   const rows = flattenPaypackRows(payload);
-  if (!rows.length) return null;
+  if (!rows.length || !payment.referenceId) return null;
 
-  const paymentMs = new Date(payment.createdAt || Date.now()).getTime();
-  const windowMs = 30 * 60 * 1000;
-  const msisdn = normalizePhoneNumber(payment.msisdn);
-
-  const matches = rows.filter((row) => {
+  const match = rows.find((row) => {
     if (mapPaypackStatus(row.status) !== 'SUCCESSFUL') return false;
-    if (row.ref && blockedRefs.has(row.ref)) return false;
-
-    if (row.ref && row.ref === payment.referenceId) return true;
-
-    // Phone+amount fallback: only when Paypack row has no ref or ref is not claimed elsewhere
-    if (row.ref && row.ref !== payment.referenceId) return false;
-
-    const amountMatch = Number(row.amount) === Number(payment.amount);
-    const phoneMatch = !row.client || normalizePhoneNumber(row.client) === msisdn;
-    const atMs = row.at ? new Date(row.at).getTime() : paymentMs;
-    const timeMatch = Math.abs(atMs - paymentMs) <= windowMs;
-    return amountMatch && phoneMatch && timeMatch;
+    if (!row.ref || row.ref !== payment.referenceId) return false;
+    if (blockedRefs.has(row.ref)) return false;
+    return true;
   });
 
-  if (!matches.length) return null;
-
-  return matches.sort((a, b) => {
-    const aExactRef = a.ref === payment.referenceId ? 1 : 0;
-    const bExactRef = b.ref === payment.referenceId ? 1 : 0;
-    if (bExactRef !== aExactRef) return bExactRef - aExactRef;
-    const aTime = a.at ? new Date(a.at).getTime() : 0;
-    const bTime = b.at ? new Date(b.at).getTime() : 0;
-    return Math.abs(aTime - paymentMs) - Math.abs(bTime - paymentMs);
-  })[0];
+  return match || null;
 }
 
 function refsMatch(expectedRef, dataRef, rootRef) {
@@ -380,6 +381,76 @@ export function mapPaypackStatus(status) {
     return 'FAILED';
   }
   return 'PENDING';
+}
+
+/** How many open CASHIN prompts Paypack still has for this phone. */
+export async function getPaypackPendingCashinCount(client) {
+  const normalized = normalizePhoneNumber(client);
+  if (!normalized) return 0;
+  try {
+    const ev = await findTransactionEvents({
+      client: normalized,
+      kind: 'CASHIN',
+      status: 'pending',
+    });
+    return Number(ev.total) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function estimateCashinTotal(amount, feeRate = 0.023) {
+  const base = Number(amount) || 0;
+  const fee = Math.ceil(base * feeRate);
+  return { amount: base, fee, total: base + fee };
+}
+
+/** User-facing hint when Paypack/MTN declines a cashin before the customer approves. */
+export function describePaypackFailure({
+  provider = 'mtn',
+  client = '',
+  amount,
+  pendingCount = 0,
+  immediate = false,
+} = {}) {
+  const network = String(provider).toLowerCase() === 'airtel' ? 'Airtel Money' : 'MTN MoMo';
+  const dial = network === 'Airtel Money' ? '*185*7*1#' : '*182*7*1#';
+  const phone = client ? ` (${client})` : '';
+  const amountPart = amount ? ` for ${Number(amount).toLocaleString()} RWF` : '';
+  const { total } = amount ? estimateCashinTotal(amount) : { total: 0 };
+  const balanceHint =
+    total > 0
+      ? ` You need at least ${total.toLocaleString()} RWF on MoMo (${Number(amount).toLocaleString()} + fees).`
+      : '';
+
+  let code = 'PAYPACK_DECLINED';
+  let message =
+    `${network} declined the payment request${phone}${amountPart}.${balanceHint} ` +
+    `Dial ${dial}, open pending approvals, cancel old requests, wait 5–10 minutes, then try once.`;
+
+  if (pendingCount >= 3) {
+    code = 'PENDING_MOMO_REQUESTS';
+    message =
+      `${network} has ${pendingCount} pending payment request(s) on ${client || 'this phone'}. ` +
+      `MTN will keep declining new payments until you clear them. Dial ${dial}, cancel all pending approvals, ` +
+      `wait 5–10 minutes, then try again once.${balanceHint}`;
+  } else if (immediate) {
+    code = 'MOMO_IMMEDIATE_REJECT';
+    message =
+      `${network} rejected the ${Number(amount).toLocaleString()} RWF request immediately${phone} — usually caused by ` +
+      `old pending MoMo prompts or insufficient balance (need ~${total.toLocaleString()} RWF including fees). ` +
+      `Dial ${dial}, clear pending approvals, wait a few minutes, then try again once.`;
+  }
+
+  return {
+    code,
+    message,
+    short: `${network} declined the request`,
+    dial,
+    network,
+    pendingCount,
+    requiredBalance: total || null,
+  };
 }
 
 export function verifyWebhookSignature(rawBody, signature) {

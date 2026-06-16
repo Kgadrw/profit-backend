@@ -2,10 +2,9 @@ export const TRIAL_DAYS = 7;
 export const SUBSCRIPTION_AMOUNT = Number(process.env.SUBSCRIPTION_AMOUNT || 10000);
 const LEGACY_SUBSCRIPTION_AMOUNT = 5000;
 
-export function resolveSubscriptionAmount(plan = {}) {
-  const amount = Number(plan.amount);
-  if (!amount || amount === LEGACY_SUBSCRIPTION_AMOUNT) return SUBSCRIPTION_AMOUNT;
-  return amount;
+export function resolveSubscriptionAmount(_plan = {}) {
+  // .env SUBSCRIPTION_AMOUNT is the charge amount (override stored plan for testing/production toggles)
+  return SUBSCRIPTION_AMOUNT;
 }
 
 export function getTrialEndsAt(user) {
@@ -29,9 +28,14 @@ export function getTrialDaysLeft(user) {
   return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
 }
 
+function hasPaidPeriodRemaining(plan) {
+  if (!plan.lastPaidAt || !plan.nextDueDate) return false;
+  return new Date(plan.nextDueDate).getTime() > Date.now();
+}
+
 export function requiresPayment(user) {
   const plan = user.paymentPlan || {};
-  if (plan.active === false || plan.status === 'paused') return false;
+  if (plan.cancelledAt || plan.active === false || plan.status === 'paused') return false;
   if (isOnTrial(user)) return false;
   if (!plan.lastPaidAt) return true;
   if (plan.status === 'past_due') return true;
@@ -45,7 +49,9 @@ export function requiresPayment(user) {
 
 export function hasPlusAccess(user) {
   const plan = user.paymentPlan || {};
-  if (plan.active === false || plan.status === 'paused') return false;
+  if (plan.cancelledAt || plan.active === false || plan.status === 'paused') {
+    return hasPaidPeriodRemaining(plan);
+  }
   if (isOnTrial(user)) return true;
   if (!plan.lastPaidAt) return false;
   const nextDue = plan.nextDueDate ? new Date(plan.nextDueDate) : null;
@@ -59,7 +65,7 @@ export function serializePaymentPlan(user) {
 
   return {
     planName: plan.planName || 'Plus',
-    active: plan.active !== false,
+    active: plan.active !== false && !plan.cancelledAt,
     amount: resolveSubscriptionAmount(plan),
     currency: plan.currency || 'RWF',
     intervalMonths: plan.intervalMonths ?? 1,
@@ -71,8 +77,27 @@ export function serializePaymentPlan(user) {
     hasPlus: hasPlusAccess(user),
     nextDueDate: plan.nextDueDate || null,
     lastPaidAt: plan.lastPaidAt || null,
-    status: onTrial ? 'trial' : (plan.status || 'active'),
+    cancelledAt: plan.cancelledAt ? new Date(plan.cancelledAt).toISOString() : null,
+    isCancelled: Boolean(plan.cancelledAt),
+    status: plan.cancelledAt ? 'cancelled' : (onTrial ? 'trial' : (plan.status || 'active')),
   };
+}
+
+/** User-initiated cancellation. Paid users keep Plus until nextDueDate. */
+export function cancelSubscriptionPlan(user) {
+  const plan = user.paymentPlan || {};
+  plan.cancelledAt = new Date();
+  plan.status = 'paused';
+  plan.active = false;
+  plan.reminderStage = '';
+  plan.lastReminderAt = null;
+
+  if (isOnTrial(user) || !plan.lastPaidAt) {
+    plan.trialEndsAt = new Date();
+  }
+
+  user.paymentPlan = plan;
+  return plan;
 }
 
 /** Apply a successful subscription payment to a user's payment plan. */
@@ -83,7 +108,8 @@ export function applySuccessfulPayment(user, paidAt = new Date()) {
   plan.amount = resolveSubscriptionAmount(plan);
   if (!plan.currency) plan.currency = 'RWF';
   if (!plan.planName) plan.planName = 'Plus';
-  if (plan.active === undefined) plan.active = true;
+  plan.active = true;
+  plan.cancelledAt = null;
 
   plan.lastPaidAt = paidAt;
   plan.status = 'active';

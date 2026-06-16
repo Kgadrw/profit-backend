@@ -87,6 +87,10 @@ export const createProduct = async (req, res) => {
     if (productData.minStock) productData.minStock = parseInt(productData.minStock);
     if (productData.packageQuantity) productData.packageQuantity = parseInt(productData.packageQuantity);
 
+    if (!productData.category || !String(productData.category).trim()) {
+      productData.category = 'General';
+    }
+
     // Check for duplicate product (same name, category, and productType)
     const normalizedName = productData.name.trim().toLowerCase();
     const normalizedCategory = productData.category.trim().toLowerCase();

@@ -21,6 +21,69 @@ const getUserId = async (req) => {
   return null;
 };
 
+// Helper to deduct stock for inventory products (skip services)
+const deductProductStock = async (product, quantity) => {
+  if (!product || product.category === 'service') return product;
+  product.stock = Math.max(0, (product.stock ?? 0) - quantity);
+  await product.save();
+  return product;
+};
+
+// Helper to restore stock for inventory products
+const restoreProductStock = async (product, quantity) => {
+  if (!product || product.category === 'service') return product;
+  product.stock = (product.stock ?? 0) + quantity;
+  await product.save();
+  return product;
+};
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Resolve inventory product by Mongo id or exact name (case-insensitive). */
+const resolveInventoryProduct = async (userId, productId, productName) => {
+  const mongoose = (await import('mongoose')).default;
+
+  if (productId && mongoose.Types.ObjectId.isValid(String(productId))) {
+    const byId = await Product.findOne({ _id: productId, userId });
+    if (byId && byId.category !== 'service') return byId;
+  }
+
+  const name = String(productName || '').trim();
+  if (name) {
+    const byName = await Product.findOne({
+      userId,
+      name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
+      category: { $ne: 'service' },
+    });
+    if (byName) return byName;
+  }
+
+  return null;
+};
+
+const applySaleStockDeduction = async (userId, saleData) => {
+  const product = await resolveInventoryProduct(userId, saleData.productId, saleData.product);
+  if (!product) return null;
+
+  saleData.productId = product._id;
+  if (saleData.inventoryId === undefined) {
+    saleData.inventoryId = product.inventoryId ?? null;
+  }
+
+  const qty = Number(saleData.quantity) || 0;
+  if (qty > 0 && qty > (product.stock ?? 0)) {
+    const err = new Error(`Insufficient stock for ${product.name}. Only ${product.stock ?? 0} available.`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const updated = await deductProductStock(product, qty);
+  if (updated) {
+    emitToUser(userId, 'product:updated', updated.toObject());
+  }
+  return updated;
+};
+
 export const getSales = async (req, res) => {
   try {
     const userId = await getUserId(req);
@@ -182,19 +245,14 @@ export const createSale = async (req, res) => {
       saleData.productId = undefined;
       saleData.inventoryId = null;
     } else {
-      // Handle product sales (existing logic)
-    // If productId is provided, try to find and update product stock
-    if (saleData.productId) {
-      const product = await Product.findOne({ _id: saleData.productId, userId });
-      if (product) {
-        // Infer inventory from the product unless explicitly provided
-        if (saleData.inventoryId === undefined) {
-          saleData.inventoryId = product.inventoryId ?? null;
+      // Handle product sales — deduct stock by productId or product name
+      try {
+        await applySaleStockDeduction(userId, saleData);
+      } catch (stockErr) {
+        if (stockErr.statusCode === 400) {
+          return res.status(400).json({ error: stockErr.message });
         }
-        product.stock = Math.max(0, product.stock - saleData.quantity);
-        await product.save();
-        // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
-        }
+        throw stockErr;
       }
     }
 
@@ -243,17 +301,14 @@ export const createBulkSales = async (req, res) => {
       if (processedSale.profit) processedSale.profit = parseFloat(processedSale.profit);
       if (processedSale.date) processedSale.date = new Date(processedSale.date);
 
-      // Update product stock if productId is provided
-      if (processedSale.productId) {
-        const product = await Product.findOne({ _id: processedSale.productId, userId });
-        if (product) {
-          if (processedSale.inventoryId === undefined) {
-            processedSale.inventoryId = product.inventoryId ?? null;
-          }
-          product.stock = Math.max(0, product.stock - processedSale.quantity);
-          await product.save();
-          // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
+      // Update product stock for inventory products
+      try {
+        await applySaleStockDeduction(userId, processedSale);
+      } catch (stockErr) {
+        if (stockErr.statusCode === 400) {
+          return res.status(400).json({ error: stockErr.message });
         }
+        throw stockErr;
       }
 
       const sale = new Sale(processedSale);
@@ -300,23 +355,28 @@ export const updateSale = async (req, res) => {
 
     if (quantityChanged || productIdChanged) {
       // Restore stock from old sale
-      if (oldSale.productId) {
-        const oldProduct = await Product.findOne({ _id: oldSale.productId, userId });
+      if (oldSale.productId || oldSale.product) {
+        const oldProduct = await resolveInventoryProduct(userId, oldSale.productId, oldSale.product);
         if (oldProduct) {
-          oldProduct.stock = oldProduct.stock + oldSale.quantity;
-          await oldProduct.save();
+          const restored = await restoreProductStock(oldProduct, oldSale.quantity);
+          if (restored) emitToUser(userId, 'product:updated', restored.toObject());
         }
       }
 
       // Reduce stock for new/updated sale
       const newProductId = updateData.productId || oldSale.productId;
-      if (newProductId) {
-        const newProduct = await Product.findOne({ _id: newProductId, userId });
-        if (newProduct) {
-          const newQuantity = updateData.quantity !== undefined ? updateData.quantity : oldSale.quantity;
-          newProduct.stock = Math.max(0, newProduct.stock - newQuantity);
-          await newProduct.save();
+      const newProductName = updateData.product || oldSale.product;
+      const newProduct = await resolveInventoryProduct(userId, newProductId, newProductName);
+      if (newProduct) {
+        const newQuantity = updateData.quantity !== undefined ? updateData.quantity : oldSale.quantity;
+        if (newQuantity > (newProduct.stock ?? 0)) {
+          return res.status(400).json({
+            error: `Insufficient stock for ${newProduct.name}. Only ${newProduct.stock ?? 0} available.`,
+          });
         }
+        const updated = await deductProductStock(newProduct, newQuantity);
+        if (updated) emitToUser(userId, 'product:updated', updated.toObject());
+        updateData.productId = newProduct._id;
       }
     }
 
@@ -360,12 +420,12 @@ export const deleteSale = async (req, res) => {
       return res.status(404).json({ error: 'Sale not found' });
     }
 
-    // Restore product stock if productId is provided
-    if (sale.productId) {
-      const product = await Product.findOne({ _id: sale.productId, userId });
+    // Restore product stock
+    if (sale.productId || sale.product) {
+      const product = await resolveInventoryProduct(userId, sale.productId, sale.product);
       if (product) {
-        product.stock = product.stock + sale.quantity;
-        await product.save();
+        const restored = await restoreProductStock(product, sale.quantity);
+        if (restored) emitToUser(userId, 'product:updated', restored.toObject());
       }
     }
 
@@ -410,8 +470,7 @@ export const deleteAllSales = async (req, res) => {
       try {
         const product = await Product.findOne({ _id: productId, userId });
         if (product) {
-          product.stock = product.stock + totalQuantity;
-          await product.save();
+          await restoreProductStock(product, totalQuantity);
         }
       } catch (error) {
         console.error(`Error restoring stock for product ${productId}:`, error);

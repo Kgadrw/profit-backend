@@ -2,6 +2,7 @@ import SubscriptionPayment from '../models/SubscriptionPayment.js';
 
 const MAX_SYNC_ISSUES = 10;
 const PENDING_PAYMENT_WINDOW_MS = 15 * 60 * 1000;
+export const STALE_PENDING_MS = 10 * 60 * 1000;
 
 export async function recordPaymentSyncIssue(payment, code, message) {
   if (!payment.syncIssues) payment.syncIssues = [];
@@ -55,10 +56,7 @@ export async function canClaimPaypackRef(payment, ref) {
   if (String(owner._id) === String(payment._id)) return { ok: true };
 
   if (String(owner.userId) === String(payment.userId)) {
-    if (owner.status === 'SUCCESSFUL') {
-      return { ok: true, sameUserSuccess: true };
-    }
-    return { ok: false, code: 'DUPLICATE_REF', message: 'Reference belongs to another attempt for this account' };
+    return { ok: false, code: 'DUPLICATE_REF', message: 'Reference belongs to another payment attempt for this account' };
   }
 
   return {
@@ -76,4 +74,27 @@ export async function findRecentPendingPayment(userId) {
   })
     .sort({ createdAt: -1 })
     .lean();
+}
+
+/** Mark old PENDING rows as FAILED so they no longer block new payment attempts. */
+export async function expireStalePendingPayments(userId, maxAgeMs = STALE_PENDING_MS) {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const stale = await SubscriptionPayment.find({
+    userId,
+    status: 'PENDING',
+    createdAt: { $lt: cutoff },
+  });
+
+  for (const payment of stale) {
+    payment.status = 'FAILED';
+    payment.providerStatus = 'expired';
+    payment.mtnStatus = 'expired';
+    await recordPaymentSyncIssue(
+      payment,
+      'PAYMENT_EXPIRED',
+      'Payment prompt expired after waiting. You can start a new payment.',
+    );
+  }
+
+  return stale.length;
 }

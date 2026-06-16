@@ -43,7 +43,7 @@ export const createClient = async (req, res) => {
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot create clients' });
     }
-    const { name, email, phone, businessType, clientType, notes } = req.body;
+    const { name, email, phone, businessType, clientType, notes, workerStatus, discipline, lastCheckIn, lastCheckOut } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Client name is required' });
@@ -64,6 +64,10 @@ export const createClient = async (req, res) => {
       businessType: businessType.trim(),
       clientType: clientType || 'other',
       notes: notes ? notes.trim() : undefined,
+      workerStatus: workerStatus || 'active',
+      discipline: discipline || 'good',
+      lastCheckIn: lastCheckIn ? new Date(lastCheckIn) : undefined,
+      lastCheckOut: lastCheckOut ? new Date(lastCheckOut) : undefined,
       userId,
     });
 
@@ -86,7 +90,7 @@ export const updateClient = async (req, res) => {
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot update clients' });
     }
-    const { name, email, phone, businessType, clientType, notes } = req.body;
+    const { name, email, phone, businessType, clientType, notes, workerStatus, discipline, lastCheckIn, lastCheckOut } = req.body;
 
     const client = await Client.findOne({ _id: req.params.id, userId });
     
@@ -111,6 +115,14 @@ export const updateClient = async (req, res) => {
     }
     if (clientType !== undefined) client.clientType = clientType;
     if (notes !== undefined) client.notes = notes ? notes.trim() : undefined;
+    if (workerStatus !== undefined) client.workerStatus = workerStatus;
+    if (discipline !== undefined) client.discipline = discipline;
+    if (lastCheckIn !== undefined) {
+      client.lastCheckIn = lastCheckIn ? new Date(lastCheckIn) : undefined;
+    }
+    if (lastCheckOut !== undefined) {
+      client.lastCheckOut = lastCheckOut ? new Date(lastCheckOut) : undefined;
+    }
 
     await client.save();
     res.json({ data: client });

@@ -9,8 +9,11 @@ import {
   fetchTransactionEventSnapshots,
   findMatchingSuccessfulTransaction,
   extractPaypackStatusFromEventSnapshots,
+  findTransactionEvents,
   generateIdempotencyKey,
   getPaymentPublicConfig,
+  describePaypackFailure,
+  getPaypackPendingCashinCount,
   isMockPaymentsEnabled,
   isPaypackConfigured,
   mapPaypackStatus,
@@ -21,18 +24,25 @@ import {
   applySuccessfulPayment,
   serializePaymentPlan,
   resolveSubscriptionAmount,
+  getTrialEndsAt,
+  isOnTrial,
+  cancelSubscriptionPlan,
 } from '../utils/paymentPlanUtils.js';
 import {
   buildPaymentSyncMeta,
   canClaimPaypackRef,
+  expireStalePendingPayments,
   findRecentPendingPayment,
   getBlockedPaypackRefs,
   recordPaymentSyncIssue,
+  STALE_PENDING_MS,
   touchPaymentSync,
 } from '../utils/subscriptionPaymentSync.js';
 
 const MOCK_PAYMENT_DELAY_MS = Number(process.env.SUBSCRIPTION_MOCK_DELAY_MS || 4000);
 const FIND_FAILED_GRACE_MS = 3 * 60 * 1000;
+const SUCCESS_MIN_AGE_MS = 15 * 1000;
+const POLL_SYNC_MIN_AGE_MS = 90 * 1000;
 
 async function finalizeSuccessfulPayment(payment) {
   if (payment.status === 'SUCCESSFUL') return payment;
@@ -59,6 +69,16 @@ async function applyProviderStatus(payment, providerStatus, { source = 'unknown'
   payment.mtnStatus = payment.providerStatus;
 
   if (mapped === 'SUCCESSFUL') {
+    const ageMs = Date.now() - new Date(payment.createdAt).getTime();
+    const deferEarlySuccess = source === 'find' && ageMs < SUCCESS_MIN_AGE_MS;
+    if (deferEarlySuccess) {
+      console.log(
+        `[Subscription] Deferring early SUCCESS for ${payment.referenceId} (${source}, ${providerStatus})`,
+      );
+      touchPaymentSync(payment);
+      await payment.save();
+      return payment;
+    }
     return finalizeSuccessfulPayment(payment);
   }
 
@@ -71,7 +91,8 @@ async function applyProviderStatus(payment, providerStatus, { source = 'unknown'
     }
 
     const ageMs = Date.now() - new Date(payment.createdAt).getTime();
-    if ((source === 'events' || source === 'find') && ageMs < FIND_FAILED_GRACE_MS) {
+    // Only defer find()-based failures — Paypack find 404s early. Processed events are authoritative.
+    if (source === 'find' && ageMs < FIND_FAILED_GRACE_MS) {
       console.log(
         `[Subscription] Deferring FAILED for recent payment ${payment.referenceId} (${providerStatus}, ${source})`,
       );
@@ -80,17 +101,27 @@ async function applyProviderStatus(payment, providerStatus, { source = 'unknown'
       return payment;
     }
 
-    if (source === 'events' && ageMs < 5 * 60 * 1000) {
+    const failureHint = describePaypackFailure({
+      provider: payment.provider || 'mtn',
+      client: payment.msisdn,
+      amount: payment.amount,
+      immediate: ageMs < 15 * 1000,
+    });
+    const alreadyFailed = payment.status === 'FAILED';
+    if (!alreadyFailed) {
       console.log(
-        `[Subscription] Deferring FAILED for recent payment ${payment.referenceId} (${providerStatus})`,
+        `[Subscription] Payment ${payment.referenceId} marked FAILED via ${source}: ${providerStatus}`,
+        {
+          msisdn: payment.msisdn,
+          amount: payment.amount,
+          ageSec: Math.round(ageMs / 1000),
+        },
       );
-      return payment;
+      await recordPaymentSyncIssue(payment, failureHint.code, failureHint.message);
     }
-
-    console.log(
-      `[Subscription] Payment ${payment.referenceId} marked FAILED via ${source}: ${providerStatus}`,
-    );
     payment.status = 'FAILED';
+    payment.providerStatus = String(providerStatus || failureHint.short);
+    payment.mtnStatus = payment.providerStatus;
     touchPaymentSync(payment);
     await payment.save();
   } else {
@@ -110,10 +141,6 @@ async function applyMatchedPaypackTransaction(payment, match, source) {
     return payment;
   }
 
-  if (claim.sameUserSuccess && payment.status !== 'SUCCESSFUL') {
-    return finalizeSuccessfulPayment(payment);
-  }
-
   if (ref && ref !== payment.referenceId) {
     payment.referenceId = ref;
   }
@@ -131,12 +158,48 @@ async function reconcileWithPaypackList(payment, source) {
   return applyMatchedPaypackTransaction(payment, match, source);
 }
 
-export async function syncPaymentStatus(payment) {
-  if (payment.status === 'SUCCESSFUL') return payment;
-  if (payment.status === 'FAILED') {
-    const ageMs = Date.now() - new Date(payment.createdAt).getTime();
-    if (ageMs > 48 * 60 * 60 * 1000) return payment;
+/** Safe ref-only Paypack sync — used during frontend polling (find API often 404s). */
+async function syncPaymentViaRefEvents(payment) {
+  const queries = [
+    { ref: payment.referenceId, client: payment.msisdn, kind: 'CASHIN' },
+    { ref: payment.referenceId, kind: 'CASHIN' },
+  ];
+  const snapshots = [];
+
+  for (const query of queries) {
+    try {
+      snapshots.push(await findTransactionEvents(query));
+    } catch {
+      // try next query shape
+    }
   }
+
+  if (!snapshots.length) return payment;
+
+  const eventStatus = extractPaypackStatusFromEventSnapshots(snapshots, payment.referenceId);
+  if (!eventStatus) return payment;
+
+  const eventRef = eventStatus.ref || payment.referenceId;
+  const claim = await canClaimPaypackRef(payment, eventRef);
+  if (!claim.ok) {
+    await recordPaymentSyncIssue(payment, claim.code, claim.message);
+    return payment;
+  }
+
+  if (eventRef !== payment.referenceId) payment.referenceId = eventRef;
+  payment.financialTransactionId = eventRef;
+  return applyProviderStatus(payment, eventStatus.status, {
+    source: 'events',
+    definitive: eventStatus.fromProcessed,
+  });
+}
+
+export async function syncPaymentStatus(payment, { mode = 'full', recoverFailed = false } = {}) {
+  if (payment.status === 'SUCCESSFUL') return payment;
+  if (payment.status === 'FAILED' && !recoverFailed) return payment;
+
+  const ageMs = Date.now() - new Date(payment.createdAt).getTime();
+  const skipHeavyReconcile = mode === 'poll' || ageMs < POLL_SYNC_MIN_AGE_MS;
 
   touchPaymentSync(payment);
 
@@ -165,8 +228,30 @@ export async function syncPaymentStatus(payment) {
       return payment;
     }
 
-    return applyProviderStatus(payment, tx.status, { source: 'find', definitive: true });
+    const mapped = mapPaypackStatus(tx.status);
+    if (mapped === 'PENDING' && ageMs > 5000) {
+      payment = await syncPaymentViaRefEvents(payment);
+      if (payment.status !== 'PENDING') return payment;
+    }
+    if (mapped !== 'SUCCESSFUL' || tx.ref === payment.referenceId) {
+      return applyProviderStatus(payment, tx.status, { source: 'find', definitive: true });
+    }
+    await recordPaymentSyncIssue(
+      payment,
+      'REF_MISMATCH',
+      `Paypack ref ${tx.ref} does not match ${payment.referenceId}`,
+    );
+    await payment.save();
+    return payment;
   } catch (findError) {
+    payment = await syncPaymentViaRefEvents(payment);
+    if (payment.status === 'SUCCESSFUL' || payment.status === 'FAILED') return payment;
+
+    if (skipHeavyReconcile) {
+      await payment.save();
+      return payment;
+    }
+
     console.warn('[Subscription] Paypack find failed, trying reconcile/events:', findError.message);
 
     for (const source of ['processed', 'client']) {
@@ -251,19 +336,19 @@ async function syncUserPendingPayments(userId, { recoverFailed = false } = {}) {
   failed.providerStatus = '';
   failed.mtnStatus = '';
   await failed.save();
-  await syncPaymentStatus(failed);
+  await syncPaymentStatus(failed, { recoverFailed: true });
   if (failed.status === 'SUCCESSFUL') {
     console.log(`[Subscription] Recovered falsely failed payment ${failed.referenceId}`);
   }
 }
 
-/** Reconcile stuck PENDING/FAILED payments — used by scheduler. */
+/** Reconcile stuck PENDING payments — used by scheduler. */
 export async function reconcileStuckSubscriptionPayments({ limit = 25 } = {}) {
   const minAge = new Date(Date.now() - 2 * 60 * 1000);
-  const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const stuck = await SubscriptionPayment.find({
-    status: { $in: ['PENDING', 'FAILED'] },
+    status: 'PENDING',
     createdAt: { $gte: since, $lte: minAge },
   })
     .sort({ createdAt: -1 })
@@ -282,6 +367,29 @@ export async function reconcileStuckSubscriptionPayments({ limit = 25 } = {}) {
   return { checked: stuck.length, updated };
 }
 
+/** Undo subscription activation when lastPaidAt was set without any successful MoMo payment. */
+async function healInconsistentPaymentPlan(user) {
+  const plan = user.paymentPlan || {};
+  if (!plan.lastPaidAt) return user;
+
+  const hasSuccessfulPayment = await SubscriptionPayment.exists({
+    userId: user._id,
+    status: 'SUCCESSFUL',
+  });
+  if (hasSuccessfulPayment) return user;
+
+  const trialEndsAt = getTrialEndsAt(user);
+  const fixedPlan = {
+    ...plan,
+    lastPaidAt: null,
+    nextDueDate: trialEndsAt,
+    status: isOnTrial(user) ? 'active' : 'past_due',
+  };
+  await User.updateOne({ _id: user._id }, { $set: { paymentPlan: fixedPlan } });
+  console.log(`[Subscription] Healed inconsistent payment plan for user ${user._id}`);
+  return User.findById(user._id);
+}
+
 function paymentResponseData(payment, extra = {}) {
   const obj = payment?.toObject ? payment.toObject() : payment;
   return {
@@ -291,14 +399,27 @@ function paymentResponseData(payment, extra = {}) {
   };
 }
 
+export const getSubscriptionPaymentConfig = async (req, res) => {
+  try {
+    const paymentConfig = getPaymentPublicConfig();
+    res.json({ data: paymentConfig });
+  } catch (error) {
+    console.error('Get subscription payment config error:', error);
+    res.status(500).json({ error: error.message || 'Failed to load payment config' });
+  }
+};
+
 export const getSubscriptionStatus = async (req, res) => {
   try {
     let user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    user = (await healInconsistentPaymentPlan(user)) || user;
+
     const shouldSync = req.query.sync === '1' || req.query.sync === 'true';
     if (shouldSync) {
       await syncUserPendingPayments(user._id, { recoverFailed: true });
+      await expireStalePendingPayments(user._id);
       user = await User.findById(req.user._id);
     }
 
@@ -335,6 +456,58 @@ export const getSubscriptionStatus = async (req, res) => {
   }
 };
 
+async function resolveBlockingPendingPayment(userId, { forceRetry = false } = {}) {
+  let pending = await SubscriptionPayment.findOne({
+    userId,
+    status: 'PENDING',
+    createdAt: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
+  }).sort({ createdAt: -1 });
+
+  if (!pending) return { pending: null, user: null };
+
+  pending = await syncPaymentStatus(pending, { mode: 'full' });
+
+  if (pending.status === 'SUCCESSFUL') {
+    return { pending, user: await User.findById(userId) };
+  }
+
+  if (pending.status === 'FAILED') {
+    return { pending: null, user: null };
+  }
+
+  const ageMs = Date.now() - new Date(pending.createdAt).getTime();
+
+  if (ageMs >= STALE_PENDING_MS) {
+    pending.status = 'FAILED';
+    pending.providerStatus = 'expired';
+    pending.mtnStatus = 'expired';
+    await recordPaymentSyncIssue(
+      pending,
+      'PAYMENT_EXPIRED',
+      'Payment prompt expired after waiting. You can start a new payment.',
+    );
+    await pending.save();
+    return { pending: null, user: null };
+  }
+
+  if (forceRetry) {
+    if (ageMs >= 2 * 60 * 1000) {
+      pending.status = 'FAILED';
+      pending.providerStatus = 'abandoned';
+      pending.mtnStatus = 'abandoned';
+      await recordPaymentSyncIssue(
+        pending,
+        'PAYMENT_ABANDONED',
+        'Previous payment attempt expired. Starting a new MoMo prompt.',
+      );
+      await pending.save();
+      return { pending: null, user: null };
+    }
+  }
+
+  return { pending, user: null };
+}
+
 export const initiateSubscriptionPayment = async (req, res) => {
   try {
     const mock = isMockPaymentsEnabled();
@@ -348,16 +521,37 @@ export const initiateSubscriptionPayment = async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const recentPending = await SubscriptionPayment.findOne({
-      userId: user._id,
-      status: 'PENDING',
-      createdAt: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
-    }).sort({ createdAt: -1 });
+    await syncUserPendingPayments(user._id);
+    await expireStalePendingPayments(user._id);
+
+    const forceRetry = req.body?.forceRetry === true || req.body?.forceRetry === 'true';
+    const { pending: recentPending, user: paidUser } = await resolveBlockingPendingPayment(
+      user._id,
+      { forceRetry },
+    );
+
+    if (paidUser) {
+      const paymentConfig = getPaymentPublicConfig();
+      return res.status(200).json({
+        message: 'Payment already completed.',
+        code: 'ALREADY_PAID',
+        data: {
+          referenceId: recentPending.referenceId,
+          amount: recentPending.amount,
+          currency: recentPending.currency,
+          status: 'SUCCESSFUL',
+          inProgress: false,
+          plan: serializePaymentPlan(paidUser),
+          payment: paymentConfig,
+          mtn: paymentConfig,
+        },
+      });
+    }
 
     if (recentPending) {
       const paymentConfig = getPaymentPublicConfig();
       return res.status(200).json({
-        message: 'A payment is already in progress. Approve the prompt on your phone or wait a few minutes.',
+        message: 'A payment is already in progress. Approve the prompt on your phone or tap Pay again to send a new prompt.',
         code: 'PAYMENT_IN_PROGRESS',
         data: {
           referenceId: recentPending.referenceId,
@@ -397,6 +591,23 @@ export const initiateSubscriptionPayment = async (req, res) => {
     const externalId = `trippo-sub-${user._id}-${Date.now()}`;
     const idempotencyKey = generateIdempotencyKey();
 
+    if (!mock) {
+      const pendingMomos = await getPaypackPendingCashinCount(number);
+      if (pendingMomos >= 5) {
+        const hint = describePaypackFailure({
+          provider: phoneCheck.network === 'airtel' ? 'airtel' : 'mtn',
+          client: number,
+          amount,
+          pendingCount: pendingMomos,
+        });
+        return res.status(409).json({
+          error: hint.message,
+          code: hint.code,
+          data: { pendingCount: pendingMomos, requiredBalance: hint.requiredBalance },
+        });
+      }
+    }
+
     let referenceId = crypto.randomUUID();
     let providerStatus = 'pending';
 
@@ -420,7 +631,7 @@ export const initiateSubscriptionPayment = async (req, res) => {
         number,
         providerStatus,
         userId: String(user._id),
-        webhookMode: process.env.PAYPACK_WEBHOOK_MODE || 'development',
+        webhookMode: process.env.PAYPACK_WEBHOOK_MODE || 'production',
       });
     }
 
@@ -469,8 +680,9 @@ export const getSubscriptionPaymentStatus = async (req, res) => {
     });
     if (!payment) return res.status(404).json({ error: 'Payment not found', code: 'NOT_FOUND' });
 
-    payment = await syncPaymentStatus(payment);
-    const user = await User.findById(req.user._id);
+    payment = await syncPaymentStatus(payment, { mode: 'full' });
+    let user = await User.findById(req.user._id);
+    if (user) user = (await healInconsistentPaymentPlan(user)) || user;
 
     res.json({
       data: {
@@ -481,6 +693,52 @@ export const getSubscriptionPaymentStatus = async (req, res) => {
   } catch (error) {
     console.error('Get payment status error:', error);
     res.status(500).json({ error: error.message || 'Failed to check payment status', code: 'SYNC_FAILED' });
+  }
+};
+
+export const cancelSubscription = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const plan = user.paymentPlan || {};
+    if (plan.cancelledAt) {
+      return res.status(200).json({
+        message: 'Subscription is already cancelled.',
+        data: { plan: serializePaymentPlan(user) },
+      });
+    }
+
+    await syncUserPendingPayments(user._id);
+    await expireStalePendingPayments(user._id);
+
+    const pending = await SubscriptionPayment.findOne({
+      userId: user._id,
+      status: 'PENDING',
+    }).sort({ createdAt: -1 });
+
+    if (pending) {
+      pending.status = 'CANCELLED';
+      pending.providerStatus = 'cancelled';
+      pending.mtnStatus = 'cancelled';
+      await recordPaymentSyncIssue(
+        pending,
+        'PAYMENT_CANCELLED',
+        'Payment cancelled because the subscription plan was cancelled.',
+      );
+    }
+
+    cancelSubscriptionPlan(user);
+    await User.updateOne({ _id: user._id }, { $set: { paymentPlan: user.paymentPlan } });
+    const updated = await User.findById(user._id);
+
+    res.json({
+      message: 'Subscription cancelled.',
+      data: { plan: serializePaymentPlan(updated) },
+    });
+  } catch (error) {
+    console.error('Cancel subscription error:', error);
+    res.status(500).json({ error: error.message || 'Failed to cancel subscription', code: 'CANCEL_FAILED' });
   }
 };
 

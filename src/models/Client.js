@@ -33,6 +33,22 @@ const clientSchema = new mongoose.Schema({
     enum: ['debtor', 'worker', 'other'],
     default: 'other',
   },
+  workerStatus: {
+    type: String,
+    enum: ['active', 'inactive'],
+    default: 'active',
+  },
+  discipline: {
+    type: String,
+    enum: ['excellent', 'good', 'fair', 'poor', 'warning'],
+    default: 'good',
+  },
+  lastCheckIn: {
+    type: Date,
+  },
+  lastCheckOut: {
+    type: Date,
+  },
   notes: {
     type: String,
     trim: true,
