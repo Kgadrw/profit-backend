@@ -4,7 +4,9 @@ import { getSubscriptionAmount } from './platformSettings.js';
 const BASE_URL = (process.env.PAYPACK_BASE_URL || 'https://payments.paypack.rw/api').replace(/\/$/, '');
 const CLIENT_ID = process.env.PAYPACK_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET || '';
-const WEBHOOK_MODE = (process.env.PAYPACK_WEBHOOK_MODE || 'production').toLowerCase();
+const WEBHOOK_MODE = String(process.env.PAYPACK_WEBHOOK_MODE || 'production')
+  .toLowerCase()
+  .trim();
 const WEBHOOK_SIGN_KEY = process.env.PAYPACK_WEBHOOK_SIGN_KEY || '';
 
 let tokenCache = { access: null, refresh: null, expiresAt: 0 };

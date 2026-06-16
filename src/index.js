@@ -124,9 +124,19 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Paypack webhook — HEAD ping + POST payload (raw body for signature verification)
-app.head('/api/subscription/webhook/paypack', paypackWebhook);
+const paypackWebhookPath = '/api/subscription/webhook/paypack';
+
+app.get(paypackWebhookPath, (req, res) => {
+  res.status(200).json({
+    ok: true,
+    message: 'Paypack webhook endpoint is active. Paypack sends POST requests here.',
+    path: paypackWebhookPath,
+  });
+});
+
+app.head(paypackWebhookPath, paypackWebhook);
 app.post(
-  '/api/subscription/webhook/paypack',
+  paypackWebhookPath,
   express.raw({ type: 'application/json', limit: requestSizeLimit.json.limit }),
   paypackWebhook,
 );
@@ -210,6 +220,7 @@ app.use((req, res) => {
       '/api/services',
       '/api/auth/login',
       '/api/auth/register',
+      '/api/subscription/webhook/paypack',
       '/api/admin/*'
     ]
   });
