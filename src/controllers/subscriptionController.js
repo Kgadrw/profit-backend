@@ -617,9 +617,25 @@ export const initiateSubscriptionPayment = async (req, res) => {
         result = await cashin({ amount, number, idempotencyKey });
       } catch (cashinError) {
         console.error('[Subscription] Paypack cashin failed:', cashinError.message);
+        const raw = String(cashinError.message || '').toLowerCase();
+        const insufficient =
+          raw.includes('insufficient') ||
+          raw.includes('not enough') ||
+          raw.includes('balance') ||
+          raw.includes('low funds');
+        const hint = describePaypackFailure({
+          provider: phoneCheck.network === 'airtel' ? 'airtel' : 'mtn',
+          client: number,
+          amount,
+          immediate: insufficient,
+        });
         return res.status(502).json({
-          error: cashinError.message || 'Could not start mobile money payment. Try again.',
-          code: 'CASHIN_FAILED',
+          error: insufficient ? hint.message : (
+            `${hint.network} could not send the payment prompt to ${number}. ` +
+            `If you do not see it on your phone, dial ${hint.dial} to check pending approvals, ` +
+            `then try again. ${cashinError.message || ''}`.trim()
+          ),
+          code: insufficient ? 'INSUFFICIENT_BALANCE' : 'CASHIN_FAILED',
         });
       }
 

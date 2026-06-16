@@ -426,20 +426,23 @@ export function describePaypackFailure({
   let code = 'PAYPACK_DECLINED';
   let message =
     `${network} declined the payment request${phone}${amountPart}.${balanceHint} ` +
-    `Dial ${dial}, open pending approvals, cancel old requests, wait 5–10 minutes, then try once.`;
+    `If you did not see a payment prompt on your phone, dial ${dial} to check pending approvals. ` +
+    `Cancel old requests, wait 5–10 minutes, then try once.`;
 
   if (pendingCount >= 3) {
     code = 'PENDING_MOMO_REQUESTS';
     message =
       `${network} has ${pendingCount} pending payment request(s) on ${client || 'this phone'}. ` +
       `MTN will keep declining new payments until you clear them. Dial ${dial}, cancel all pending approvals, ` +
-      `wait 5–10 minutes, then try again once.${balanceHint}`;
+      `wait 5–10 minutes, then try again once.${balanceHint} ` +
+      `If no prompt appears on your phone, dial ${dial} first.`;
   } else if (immediate) {
-    code = 'MOMO_IMMEDIATE_REJECT';
+    code = 'INSUFFICIENT_BALANCE';
     message =
-      `${network} rejected the ${Number(amount).toLocaleString()} RWF request immediately${phone} — usually caused by ` +
-      `old pending MoMo prompts or insufficient balance (need ~${total.toLocaleString()} RWF including fees). ` +
-      `Dial ${dial}, clear pending approvals, wait a few minutes, then try again once.`;
+      `Your ${network} wallet may not have enough money${phone}. ` +
+      `You need about ${total.toLocaleString()} RWF on MoMo (${Number(amount).toLocaleString()} RWF plus fees). ` +
+      `Top up your wallet, then try again. ` +
+      `If you still do not see a payment prompt, dial ${dial}, cancel pending approvals, wait a few minutes, then try once.`;
   }
 
   return {

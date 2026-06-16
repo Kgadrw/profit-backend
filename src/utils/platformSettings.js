@@ -9,6 +9,9 @@ let cache = {
   trialDays: Number(process.env.TRIAL_DAYS || 7),
   currency: 'RWF',
   supportEmail: process.env.SUPPORT_EMAIL || process.env.SMTP_USER || '',
+  supportPhone: process.env.SUPPORT_PHONE || '0791998365',
+  whatsappNumber: process.env.SUPPORT_WHATSAPP || process.env.SUPPORT_PHONE || '0791998365',
+  instagramUrl: process.env.INSTAGRAM_URL || 'https://instagram.com/trippoltd',
   companyName: process.env.COMPANY_NAME || 'Trippo',
   maintenanceMode: false,
   updatedAt: null,
@@ -22,6 +25,9 @@ function applyDocToCache(doc) {
     trialDays: doc.trialDays ?? cache.trialDays,
     currency: doc.currency || 'RWF',
     supportEmail: doc.supportEmail ?? cache.supportEmail,
+    supportPhone: doc.supportPhone ?? cache.supportPhone,
+    whatsappNumber: doc.whatsappNumber ?? cache.whatsappNumber,
+    instagramUrl: doc.instagramUrl ?? cache.instagramUrl,
     companyName: doc.companyName || cache.companyName,
     maintenanceMode: Boolean(doc.maintenanceMode),
     updatedAt: doc.updatedAt || doc.createdAt || null,
@@ -53,6 +59,9 @@ export async function initPlatformSettings() {
       trialDays: Number(process.env.TRIAL_DAYS || 7),
       currency: 'RWF',
       supportEmail: process.env.SUPPORT_EMAIL || process.env.SMTP_USER || '',
+      supportPhone: process.env.SUPPORT_PHONE || '0791998365',
+      whatsappNumber: process.env.SUPPORT_WHATSAPP || process.env.SUPPORT_PHONE || '0791998365',
+      instagramUrl: process.env.INSTAGRAM_URL || 'https://instagram.com/trippoltd',
       companyName: process.env.COMPANY_NAME || 'Trippo',
       maintenanceMode: false,
     });
@@ -145,6 +154,18 @@ export async function updatePlatformSettings(updates, currentPin) {
     doc.supportEmail = String(updates.supportEmail).trim();
   }
 
+  if (updates.supportPhone !== undefined) {
+    doc.supportPhone = String(updates.supportPhone).trim();
+  }
+
+  if (updates.whatsappNumber !== undefined) {
+    doc.whatsappNumber = String(updates.whatsappNumber).trim();
+  }
+
+  if (updates.instagramUrl !== undefined) {
+    doc.instagramUrl = String(updates.instagramUrl).trim();
+  }
+
   if (updates.companyName !== undefined) {
     doc.companyName = String(updates.companyName).trim() || 'Trippo';
   }
@@ -166,8 +187,23 @@ export function serializePlatformSettingsForAdmin(doc) {
     trialDays: row.trialDays,
     currency: row.currency || 'RWF',
     supportEmail: row.supportEmail || '',
+    supportPhone: row.supportPhone || '',
+    whatsappNumber: row.whatsappNumber || '',
+    instagramUrl: row.instagramUrl || '',
     companyName: row.companyName || 'Trippo',
     maintenanceMode: Boolean(row.maintenanceMode),
     updatedAt: row.updatedAt,
+  };
+}
+
+export function serializePlatformContactForPublic(doc) {
+  const row = doc?.toObject ? doc.toObject() : doc;
+  const snapshot = getPlatformSettingsSnapshot();
+  return {
+    companyName: row.companyName || snapshot.companyName || 'Trippo',
+    supportEmail: row.supportEmail ?? snapshot.supportEmail ?? '',
+    supportPhone: row.supportPhone || snapshot.supportPhone || '',
+    whatsappNumber: row.whatsappNumber || row.supportPhone || snapshot.whatsappNumber || snapshot.supportPhone || '',
+    instagramUrl: row.instagramUrl || snapshot.instagramUrl || '',
   };
 }
