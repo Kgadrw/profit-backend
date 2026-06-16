@@ -6,6 +6,7 @@ import Sale from '../models/Sale.js';
 import mongoose from 'mongoose';
 import { SUBSCRIPTION_AMOUNT } from '../utils/paymentPlanUtils.js';
 import { tryAdminLogin } from '../utils/platformSettings.js';
+import { normalizeAccountPhone } from '../utils/phoneUtils.js';
 
 function buildOtpEmailHtml({ title, greeting, bodyText, otpCode }) {
   return `
@@ -151,9 +152,9 @@ export const register = async (req, res) => {
 
     // Create new user
     const userData = {
-      name,
+      name: String(name).trim(),
       email: normalizedEmail,
-      phone: phone.trim(),
+      phone: normalizeAccountPhone(phone),
       businessName: userRole === 'salon_owner' ? undefined : undefined, // Always leave blank - user sets it in settings
       role: userRole,
       pin,
@@ -195,6 +196,15 @@ export const register = async (req, res) => {
     });
   } catch (error) {
     console.error('Registration error:', error);
+    if (error?.code === 11000) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+    if (error?.name === 'ValidationError') {
+      const first = Object.values(error.errors || {})[0];
+      return res.status(400).json({
+        error: first?.message || 'Invalid account details',
+      });
+    }
     res.status(500).json({ error: error.message || 'Failed to create account' });
   }
 };

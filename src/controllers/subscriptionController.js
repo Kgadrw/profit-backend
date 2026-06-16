@@ -17,6 +17,8 @@ import {
   isMockPaymentsEnabled,
   isPaypackConfigured,
   mapPaypackStatus,
+  parseCashinResponse,
+  resolveMoMoNetwork,
   validateRwandaMobileNumber,
   verifyWebhookSignature,
 } from '../utils/paypack.js';
@@ -102,7 +104,7 @@ async function applyProviderStatus(payment, providerStatus, { source = 'unknown'
     }
 
     const failureHint = describePaypackFailure({
-      provider: payment.provider || 'mtn',
+      provider: resolveMoMoNetwork({ provider: payment.provider, msisdn: payment.msisdn }),
       client: payment.msisdn,
       amount: payment.amount,
       immediate: ageMs < 15 * 1000,
@@ -639,12 +641,24 @@ export const initiateSubscriptionPayment = async (req, res) => {
         });
       }
 
-      referenceId = result?.ref || referenceId;
-      providerStatus = result?.status || 'pending';
+      const parsed = parseCashinResponse(result);
+      if (!parsed.ref) {
+        console.error('[Subscription] Paypack cashin missing ref:', result);
+        return res.status(502).json({
+          error:
+            'The payment provider did not confirm the MoMo request. ' +
+            'Please wait a minute and try again once.',
+          code: 'CASHIN_NO_REF',
+        });
+      }
+
+      referenceId = parsed.ref;
+      providerStatus = parsed.status || 'pending';
       console.log('[Subscription] Paypack cashin started', {
         referenceId,
         amount,
         number,
+        network: phoneCheck.network,
         providerStatus,
         userId: String(user._id),
         webhookMode: process.env.PAYPACK_WEBHOOK_MODE || 'production',
@@ -658,7 +672,7 @@ export const initiateSubscriptionPayment = async (req, res) => {
       amount,
       currency: plan.currency || 'RWF',
       msisdn: number,
-      provider: 'paypack',
+      provider: phoneCheck.network || 'mtn',
       status: 'PENDING',
       providerStatus,
       mtnStatus: providerStatus,

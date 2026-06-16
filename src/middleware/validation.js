@@ -1,17 +1,18 @@
 // Input Validation Middleware
 import { body, param, query, validationResult } from 'express-validator';
+import { isValidAccountPhone, normalizeAccountPhone } from '../utils/phoneUtils.js';
 
 // Validation error handler
 export const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
+    const details = errors.array().map((err) => ({
+      field: err.path || err.param,
+      message: err.msg,
+    }));
     return res.status(400).json({
-      error: 'Validation failed',
-      details: errors.array().map(err => ({
-        field: err.param,
-        message: err.msg,
-        value: err.value
-      }))
+      error: details[0]?.message || 'Validation failed',
+      details,
     });
   }
   next();
@@ -23,18 +24,24 @@ export const validateRegister = [
     .trim()
     .notEmpty().withMessage('Name is required')
     .isLength({ min: 2, max: 100 }).withMessage('Name must be between 2 and 100 characters')
-    .matches(/^[a-zA-Z\s'-]+$/).withMessage('Name can only contain letters, spaces, hyphens, and apostrophes'),
+    .matches(/^[\p{L}\p{M}\s'.-]+$/u).withMessage('Name contains invalid characters'),
   
   body('email')
     .trim()
     .notEmpty().withMessage('Email is required')
     .isEmail().withMessage('Please provide a valid email address')
-    .normalizeEmail(),
+    .customSanitizer((value) => String(value || '').toLowerCase().trim()),
   
   body('phone')
     .trim()
     .notEmpty().withMessage('Phone number is required')
-    .isLength({ min: 10, max: 15 }).withMessage('Phone number must be between 10 and 15 characters'),
+    .customSanitizer(normalizeAccountPhone)
+    .custom((value) => {
+      if (!isValidAccountPhone(value)) {
+        throw new Error('Please enter a valid phone number (e.g. 0781234567)');
+      }
+      return true;
+    }),
   
   body('pin')
     .trim()
@@ -62,7 +69,7 @@ export const validateSendRegistrationOtp = [
     .trim()
     .notEmpty().withMessage('Email is required')
     .isEmail().withMessage('Please provide a valid email address')
-    .normalizeEmail(),
+    .customSanitizer((value) => String(value || '').toLowerCase().trim()),
 
   handleValidationErrors,
 ];

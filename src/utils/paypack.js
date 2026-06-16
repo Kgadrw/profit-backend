@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { getSubscriptionAmount } from './platformSettings.js';
 
 const BASE_URL = (process.env.PAYPACK_BASE_URL || 'https://payments.paypack.rw/api').replace(/\/$/, '');
 const CLIENT_ID = process.env.PAYPACK_CLIENT_ID || '';
@@ -44,10 +45,33 @@ export function getPaymentPublicConfig() {
     mock,
     provider: 'paypack',
     currency: 'RWF',
-    amount: Number(process.env.SUBSCRIPTION_AMOUNT || 10000),
+    amount: getSubscriptionAmount(),
     displayCurrency: 'RWF',
     webhookMode: WEBHOOK_MODE,
-    livePrompts: WEBHOOK_MODE === 'production',
+    livePrompts: WEBHOOK_MODE === 'production' && !mock,
+  };
+}
+
+/** MTN or Airtel for user-facing MoMo messages — works with legacy provider: paypack records. */
+export function resolveMoMoNetwork({ provider, msisdn } = {}) {
+  if (provider === 'airtel' || provider === 'mtn') return provider;
+  const normalized = normalizePhoneNumber(msisdn);
+  if (/^0(78|79)/.test(normalized)) return 'mtn';
+  if (/^0(72|73)/.test(normalized)) return 'airtel';
+  return 'mtn';
+}
+
+/** Normalize Paypack cashin API body — ref may be top-level or nested under data. */
+export function parseCashinResponse(body) {
+  if (!body || typeof body !== 'object') {
+    return { ref: null, status: 'pending', provider: null, amount: null };
+  }
+  const payload = body.ref ? body : body.data && typeof body.data === 'object' ? body.data : body;
+  return {
+    ref: payload.ref || payload.reference || null,
+    status: payload.status || 'pending',
+    provider: payload.provider || null,
+    amount: payload.amount ?? null,
   };
 }
 
@@ -186,7 +210,7 @@ export async function cashin({ amount, number, idempotencyKey }) {
     }),
   });
 
-  return body?.ref ? body : body?.data?.ref ? body.data : body;
+  return parseCashinResponse(body);
 }
 
 export async function findTransaction(ref) {
