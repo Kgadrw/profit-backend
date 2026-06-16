@@ -69,10 +69,13 @@ async function createAndSendOtp({ email, purpose, subject, title, greeting, body
   });
 
   if (!emailResult.success) {
-    console.error(`Failed to send ${purpose} OTP email:`, emailResult.error);
+    await OTP.deleteMany({ email: normalizedEmail, purpose, otp: otpCode });
+    const reason = emailResult.error || emailResult.message || 'Email delivery failed';
+    console.error(`Failed to send ${purpose} OTP email to ${normalizedEmail}:`, reason);
+    return { ok: false, error: reason };
   }
 
-  return otpCode;
+  return { ok: true, otpCode };
 }
 
 export const sendRegistrationOtp = async (req, res) => {
@@ -85,7 +88,7 @@ export const sendRegistrationOtp = async (req, res) => {
       return res.status(400).json({ error: 'User with this email already exists' });
     }
 
-    await createAndSendOtp({
+    const sendResult = await createAndSendOtp({
       email: normalizedEmail,
       purpose: 'registration',
       subject: 'Verify your email - Trippo',
@@ -94,6 +97,13 @@ export const sendRegistrationOtp = async (req, res) => {
       bodyText: 'Use the verification code below to complete your Trippo account registration:',
       textPrefix: 'Your Trippo email verification code is:',
     });
+
+    if (!sendResult.ok) {
+      return res.status(503).json({
+        error: 'We could not send the verification email. Please try again in a few minutes.',
+        code: 'OTP_EMAIL_FAILED',
+      });
+    }
 
     res.json({
       message: 'A verification code has been sent to your email.',
@@ -495,7 +505,7 @@ export const forgotPin = async (req, res) => {
       });
     }
 
-    await createAndSendOtp({
+    const sendResult = await createAndSendOtp({
       email: user.email,
       purpose: 'pin_reset',
       subject: 'PIN Reset OTP - Trippo',
@@ -505,7 +515,13 @@ export const forgotPin = async (req, res) => {
       textPrefix: 'Your PIN reset OTP is:',
     });
 
-    // Always return success message (security: don't reveal if user exists)
+    if (!sendResult.ok) {
+      return res.status(503).json({
+        error: 'We could not send the reset code to your email. Please try again in a few minutes or contact support.',
+        code: 'OTP_EMAIL_FAILED',
+      });
+    }
+
     res.json({
       message: 'If an account exists with this email, an OTP has been sent.',
     });
@@ -558,9 +574,11 @@ export const checkEmail = async (req, res) => {
 export const resetPin = async (req, res) => {
   try {
     const { email, otp, newPin } = req.body;
+    const normalizedEmail = String(email || '').toLowerCase().trim();
+    const normalizedOtp = String(otp || '').trim();
 
     // Validation
-    if (!email || !otp || !newPin) {
+    if (!normalizedEmail || !normalizedOtp || !newPin) {
       return res.status(400).json({ error: 'Email, OTP, and new PIN are required' });
     }
 
@@ -568,29 +586,30 @@ export const resetPin = async (req, res) => {
       return res.status(400).json({ error: 'New PIN must be exactly 4 digits' });
     }
 
-    if (otp.length !== 6 || !/^\d{6}$/.test(otp)) {
+    if (normalizedOtp.length !== 6 || !/^\d{6}$/.test(normalizedOtp)) {
       return res.status(400).json({ error: 'OTP must be exactly 6 digits' });
     }
 
     // Find user
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     // Find valid OTP
-    const otpRecord = await OTP.findValidOTP(email.toLowerCase().trim(), otp, 'pin_reset');
+    const otpRecord = await OTP.findValidOTP(normalizedEmail, normalizedOtp, 'pin_reset');
     if (!otpRecord) {
-      // Increment attempts for any existing OTP
-      const existingOTP = await OTP.findOne({
-        email: email.toLowerCase().trim(),
-        otp,
+      const latestOtp = await OTP.findOne({
+        email: normalizedEmail,
         purpose: 'pin_reset',
         used: false,
-      });
-      if (existingOTP) {
-        await existingOTP.incrementAttempts();
+        expiresAt: { $gt: new Date() },
+      }).sort({ createdAt: -1 });
+
+      if (latestOtp) {
+        await latestOtp.incrementAttempts();
       }
+
       return res.status(400).json({ error: 'Invalid or expired OTP' });
     }
 
@@ -602,7 +621,7 @@ export const resetPin = async (req, res) => {
     await user.save();
 
     // Delete all PIN reset OTPs for this email
-    await OTP.deleteMany({ email: email.toLowerCase().trim(), purpose: 'pin_reset' });
+    await OTP.deleteMany({ email: normalizedEmail, purpose: 'pin_reset' });
 
     res.json({
       message: 'PIN reset successfully. You can now login with your new PIN.',

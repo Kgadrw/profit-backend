@@ -2,7 +2,7 @@
 import express from 'express';
 import { register, sendRegistrationOtp, login, getCurrentUser, updateUser, changePin, deleteAccount, forgotPin, resetPin, checkEmail, verifyTicket } from '../controllers/authController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
-import { validateRegister, validateLogin, validateSendRegistrationOtp } from '../middleware/validation.js';
+import { validateRegister, validateLogin, validateSendRegistrationOtp, validateForgotPin, validateResetPin } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -20,10 +20,10 @@ router.post('/login', rateLimiters.auth, validateLogin, login);
 router.post('/check-email', rateLimiters.auth, checkEmail);
 
 // Forgot PIN - Send OTP (with rate limiting)
-router.post('/forgot-pin', rateLimiters.otp, forgotPin);
+router.post('/forgot-pin', rateLimiters.otp, validateForgotPin, forgotPin);
 
 // Reset PIN - Verify OTP and reset (with rate limiting)
-router.post('/reset-pin', rateLimiters.otp, resetPin);
+router.post('/reset-pin', rateLimiters.otp, validateResetPin, resetPin);
 
 // Public ticket verification (no auth)
 router.get('/verify-ticket', rateLimiters.general, verifyTicket);

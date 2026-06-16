@@ -74,6 +74,40 @@ export const validateSendRegistrationOtp = [
   handleValidationErrors,
 ];
 
+// Forgot PIN — send OTP
+export const validateForgotPin = [
+  body('email')
+    .trim()
+    .notEmpty().withMessage('Email is required')
+    .isEmail().withMessage('Please provide a valid email address')
+    .customSanitizer((value) => String(value || '').toLowerCase().trim()),
+
+  handleValidationErrors,
+];
+
+// Reset PIN — verify OTP and set new PIN
+export const validateResetPin = [
+  body('email')
+    .trim()
+    .notEmpty().withMessage('Email is required')
+    .isEmail().withMessage('Please provide a valid email address')
+    .customSanitizer((value) => String(value || '').toLowerCase().trim()),
+
+  body('otp')
+    .trim()
+    .notEmpty().withMessage('OTP is required')
+    .isLength({ min: 6, max: 6 }).withMessage('OTP must be exactly 6 digits')
+    .matches(/^\d{6}$/).withMessage('OTP must contain only digits'),
+
+  body('newPin')
+    .trim()
+    .notEmpty().withMessage('New PIN is required')
+    .isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
+    .matches(/^\d{4}$/).withMessage('PIN must contain only digits'),
+
+  handleValidationErrors,
+];
+
 // User login validation
 export const validateLogin = [
   body('pin')
