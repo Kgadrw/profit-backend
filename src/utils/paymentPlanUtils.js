@@ -30,6 +30,12 @@ export function getTrialDaysLeft(user) {
   return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
 }
 
+export function getTrialHoursLeft(user) {
+  if (!isOnTrial(user)) return 0;
+  const ms = getTrialEndsAt(user).getTime() - Date.now();
+  return Math.max(0, Math.ceil(ms / (1000 * 60 * 60)));
+}
+
 function hasPaidPeriodRemaining(plan) {
   if (!plan.lastPaidAt || !plan.nextDueDate) return false;
   return new Date(plan.nextDueDate).getTime() > Date.now();
@@ -73,6 +79,7 @@ export function serializePaymentPlan(user) {
     intervalMonths: plan.intervalMonths ?? 1,
     startDate: plan.startDate || user.createdAt,
     trialEndsAt: trialEndsAt.toISOString(),
+    trialHoursLeft: getTrialHoursLeft(user),
     trialDaysLeft: getTrialDaysLeft(user),
     isOnTrial: onTrial,
     requiresPayment: requiresPayment(user),
