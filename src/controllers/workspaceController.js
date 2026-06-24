@@ -427,6 +427,52 @@ export const removeWorkspaceMember = async (req, res) => {
   }
 };
 
+export const searchInviteUsers = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const { q } = req.query;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+
+    await assertWorkspaceAdmin(workspaceId, userId);
+
+    const term = String(q || '').trim();
+    if (term.length < 2) {
+      return res.json({ users: [] });
+    }
+
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const users = await User.find({
+      $or: [
+        { email: { $regex: escaped, $options: 'i' } },
+        { name: { $regex: escaped, $options: 'i' } },
+      ],
+    })
+      .select('name email profilePictureUrl')
+      .limit(10)
+      .lean();
+
+    const members = await WorkspaceMember.find({ workspaceId }).select('userId').lean();
+    const memberUserIds = new Set(members.map((m) => String(m.userId)));
+
+    res.json({
+      users: users.map((u) => ({
+        id: u._id,
+        name: u.name,
+        email: u.email,
+        profilePictureUrl: u.profilePictureUrl || null,
+        alreadyMember: memberUserIds.has(String(u._id)),
+      })),
+    });
+  } catch (error) {
+    console.error('Search invite users error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to search users' });
+  }
+};
+
 export const revokeWorkspaceInvite = async (req, res) => {
   try {
     const { workspaceId, inviteId } = req.params;

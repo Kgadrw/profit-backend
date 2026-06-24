@@ -9,6 +9,7 @@ import {
   updateWorkspaceMember,
   removeWorkspaceMember,
   revokeWorkspaceInvite,
+  searchInviteUsers,
 } from '../controllers/workspaceController.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
@@ -23,6 +24,7 @@ router.use(rateLimiters.general);
 router.get('/', listWorkspaces);
 router.post('/', createWorkspace);
 router.get('/:workspaceId/members', getWorkspaceMembers);
+router.get('/:workspaceId/invite-search', searchInviteUsers);
 router.post('/:workspaceId/invites', inviteToWorkspace);
 router.post('/invites/:token/accept', acceptWorkspaceInvite);
 router.patch('/:workspaceId/members/:memberId', updateWorkspaceMember);
