@@ -67,6 +67,32 @@ const productSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    default: null,
+    index: true,
+  },
+  createdByUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  createdByName: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  updatedByUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  updatedByName: {
+    type: String,
+    trim: true,
+    default: null,
+  },
   // Optional: group products into a user-owned inventory
   inventoryId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -82,6 +108,7 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ userId: 1, name: 1 });
 productSchema.index({ userId: 1, category: 1 });
 productSchema.index({ userId: 1, inventoryId: 1, createdAt: -1 });
+productSchema.index({ workspaceId: 1, createdAt: -1 });
 
 const Product = mongoose.model('Product', productSchema);
 

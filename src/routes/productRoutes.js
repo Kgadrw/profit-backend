@@ -11,11 +11,13 @@ import { rateLimiters } from '../middleware/rateLimiter.js';
 import { validateProduct, validateObjectId } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { requirePlusAccess } from '../middleware/requirePlusAccess.js';
+import { resolveWorkspaceContext } from '../middleware/workspaceContext.js';
 
 const router = express.Router();
 
 // All product routes require authentication and rate limiting
 router.use(authenticateUser);
+router.use(resolveWorkspaceContext);
 router.use(requirePlusAccess);
 router.use(rateLimiters.products);
 

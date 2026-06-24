@@ -24,6 +24,20 @@ const scheduleSchema = new mongoose.Schema({
     enum: ['once', 'daily', 'weekly', 'monthly', 'yearly'],
     default: 'once',
   },
+  automationType: {
+    type: String,
+    enum: [
+      'payment_reminder',
+      'payment_link',
+      'invoice',
+      'report',
+      'payroll',
+      'tax_bill',
+      'follow_up',
+      'custom',
+    ],
+    default: 'custom',
+  },
   amount: {
     type: Number,
     min: [0, 'Amount must be positive'],
@@ -66,6 +80,12 @@ const scheduleSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
+  },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    default: null,
+    index: true,
   },
   lastNotified: {
     type: Date,

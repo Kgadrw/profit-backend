@@ -1,6 +1,7 @@
 // Input Validation Middleware
 import { body, param, query, validationResult } from 'express-validator';
 import { isValidAccountPhone, normalizeAccountPhone } from '../utils/phoneUtils.js';
+import { PASSWORD_MIN_LENGTH } from '../utils/passwordUtils.js';
 
 // Validation error handler
 export const handleValidationErrors = (req, res, next) => {
@@ -43,11 +44,10 @@ export const validateRegister = [
       return true;
     }),
   
-  body('pin')
+  body('password')
     .trim()
-    .notEmpty().withMessage('PIN is required')
-    .isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
-    .matches(/^\d{4}$/).withMessage('PIN must contain only digits'),
+    .notEmpty().withMessage('Password is required')
+    .isLength({ min: PASSWORD_MIN_LENGTH }).withMessage(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`),
   
   body('businessName')
     .optional()
@@ -74,8 +74,8 @@ export const validateSendRegistrationOtp = [
   handleValidationErrors,
 ];
 
-// Forgot PIN — send OTP
-export const validateForgotPin = [
+// Forgot password — send OTP
+export const validateForgotPassword = [
   body('email')
     .trim()
     .notEmpty().withMessage('Email is required')
@@ -85,8 +85,8 @@ export const validateForgotPin = [
   handleValidationErrors,
 ];
 
-// Reset PIN — verify OTP and set new PIN
-export const validateResetPin = [
+// Reset password — verify OTP and set new password
+export const validateResetPassword = [
   body('email')
     .trim()
     .notEmpty().withMessage('Email is required')
@@ -99,22 +99,39 @@ export const validateResetPin = [
     .isLength({ min: 6, max: 6 }).withMessage('OTP must be exactly 6 digits')
     .matches(/^\d{6}$/).withMessage('OTP must contain only digits'),
 
-  body('newPin')
+  body('newPassword')
+    .optional()
     .trim()
-    .notEmpty().withMessage('New PIN is required')
-    .isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
-    .matches(/^\d{4}$/).withMessage('PIN must contain only digits'),
+    .isLength({ min: PASSWORD_MIN_LENGTH }).withMessage(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`),
+
+  body('newPin')
+    .optional()
+    .trim(),
+
+  body().custom((_, { req }) => {
+    const nextPassword = req.body.newPassword || req.body.newPin;
+    if (!nextPassword) {
+      throw new Error('New password is required');
+    }
+    if (nextPassword.length < PASSWORD_MIN_LENGTH) {
+      throw new Error(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+    }
+    return true;
+  }),
 
   handleValidationErrors,
 ];
 
+// Legacy aliases
+export const validateForgotPin = validateForgotPassword;
+export const validateResetPin = validateResetPassword;
+
 // User login validation
 export const validateLogin = [
-  body('pin')
+  body('password')
     .trim()
-    .notEmpty().withMessage('PIN is required')
-    .isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
-    .matches(/^\d{4}$/).withMessage('PIN must contain only digits'),
+    .notEmpty().withMessage('Password is required')
+    .isLength({ min: 1 }).withMessage('Password is required'),
   
   body('email')
     .optional()
@@ -362,6 +379,180 @@ export const validateExpense = [
     .optional()
     .trim()
     .isLength({ max: 1000 }).withMessage('Note must not exceed 1000 characters'),
+
+  body('paymentMethod')
+    .optional()
+    .isIn(['cash', 'momo', 'airtel', 'card', 'transfer', 'other']).withMessage('Invalid payment method'),
+
+  body('receiptUrl')
+    .optional()
+    .trim()
+    .isLength({ max: 500 }).withMessage('Receipt URL must not exceed 500 characters'),
+
+  body('receiptFileName')
+    .optional()
+    .trim()
+    .isLength({ max: 255 }).withMessage('Receipt file name must not exceed 255 characters'),
+
+  handleValidationErrors
+];
+
+// Income validation
+export const validateIncome = [
+  body('title')
+    .trim()
+    .notEmpty().withMessage('Income title is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Income title must be between 1 and 200 characters'),
+
+  body('amount')
+    .notEmpty().withMessage('Income amount is required')
+    .isFloat({ min: 0 }).withMessage('Income amount must be a non-negative number'),
+
+  body('category')
+    .optional()
+    .trim()
+    .isLength({ max: 100 }).withMessage('Category must not exceed 100 characters'),
+
+  body('source')
+    .optional()
+    .trim()
+    .isLength({ max: 100 }).withMessage('Income source must not exceed 100 characters'),
+
+  body('date')
+    .optional()
+    .isISO8601().withMessage('Income date must be a valid ISO 8601 date'),
+
+  body('note')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 }).withMessage('Note must not exceed 1000 characters'),
+
+  body('paymentMethod')
+    .optional()
+    .isIn(['cash', 'momo', 'airtel', 'card', 'transfer', 'other']).withMessage('Invalid payment method'),
+
+  body('receiptUrl')
+    .optional()
+    .trim()
+    .isLength({ max: 500 }).withMessage('Receipt URL must not exceed 500 characters'),
+
+  body('receiptFileName')
+    .optional()
+    .trim()
+    .isLength({ max: 255 }).withMessage('Receipt file name must not exceed 255 characters'),
+
+  handleValidationErrors
+];
+
+export const validatePayroll = [
+  body('employeeName')
+    .trim()
+    .notEmpty().withMessage('Employee name is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Employee name must be between 1 and 200 characters'),
+
+  body('amount')
+    .notEmpty().withMessage('Payroll amount is required')
+    .isFloat({ min: 0 }).withMessage('Amount must be a non-negative number'),
+
+  body('period')
+    .trim()
+    .notEmpty().withMessage('Pay period is required')
+    .matches(/^\d{4}-\d{2}$/).withMessage('Period must be YYYY-MM format'),
+
+  body('paymentDate')
+    .optional()
+    .isISO8601().withMessage('Payment date must be a valid ISO 8601 date'),
+
+  body('status')
+    .optional()
+    .isIn(['paid', 'pending']).withMessage('Status must be paid or pending'),
+
+  body('note')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 }).withMessage('Note must not exceed 1000 characters'),
+
+  body('paymentMethod')
+    .optional()
+    .isIn(['cash', 'momo', 'airtel', 'card', 'transfer', 'other']).withMessage('Invalid payment method'),
+
+  body('receiptUrl')
+    .optional()
+    .trim()
+    .isLength({ max: 500 }),
+
+  body('receiptFileName')
+    .optional()
+    .trim()
+    .isLength({ max: 255 }),
+
+  handleValidationErrors
+];
+
+export const validateBill = [
+  body('title')
+    .trim()
+    .notEmpty().withMessage('Bill title is required')
+    .isLength({ min: 1, max: 200 }).withMessage('Bill title must be between 1 and 200 characters'),
+
+  body('amount')
+    .notEmpty().withMessage('Bill amount is required')
+    .isFloat({ min: 0 }).withMessage('Amount must be a non-negative number'),
+
+  body('vendor')
+    .optional()
+    .trim()
+    .isLength({ max: 200 }).withMessage('Vendor must not exceed 200 characters'),
+
+  body('category')
+    .optional()
+    .trim()
+    .isLength({ max: 100 }).withMessage('Category must not exceed 100 characters'),
+
+  body('dueDate')
+    .notEmpty().withMessage('Due date is required')
+    .isISO8601().withMessage('Due date must be a valid ISO 8601 date'),
+
+  body('note')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 }).withMessage('Note must not exceed 1000 characters'),
+
+  body('paymentMethod')
+    .optional()
+    .isIn(['cash', 'momo', 'airtel', 'card', 'transfer', 'other']).withMessage('Invalid payment method'),
+
+  body('receiptUrl')
+    .optional()
+    .trim()
+    .isLength({ max: 500 }),
+
+  body('receiptFileName')
+    .optional()
+    .trim()
+    .isLength({ max: 255 }),
+
+  handleValidationErrors
+];
+
+export const validateMarkBillPaid = [
+  body('paymentMethod')
+    .optional()
+    .isIn(['cash', 'momo', 'airtel', 'card', 'transfer', 'other']).withMessage('Invalid payment method'),
+
+  body('paymentDate')
+    .optional()
+    .isISO8601().withMessage('Payment date must be a valid ISO 8601 date'),
+
+  body('receiptUrl')
+    .optional()
+    .trim()
+    .isLength({ max: 500 }),
+
+  body('receiptFileName')
+    .optional()
+    .trim()
+    .isLength({ max: 255 }),
 
   handleValidationErrors
 ];

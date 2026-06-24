@@ -37,7 +37,7 @@ export const getNotifications = async (req, res) => {
   }
 };
 
-// Create a notification
+// Create a notification for the authenticated user (app events: low stock, sales, etc.)
 export const createNotification = async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -45,22 +45,25 @@ export const createNotification = async (req, res) => {
       return res.status(401).json({ error: 'User not found. Please login first.' });
     }
 
-    // Policy: users should not create their own notifications.
-    // Notifications should only be created by admin (via admin endpoints).
-    return res.status(403).json({ error: 'Notifications can only be sent by admin.' });
-
     const { type, title, body, icon, data } = req.body;
 
-    const notification = new Notification({
-      userId,
-      type: type || 'general',
-      title,
-      body,
-      icon,
-      data,
-    });
+    if (!title || !String(title).trim() || !body || !String(body).trim()) {
+      return res.status(400).json({ error: 'title and body are required' });
+    }
 
-    await notification.save();
+    const allowedTypes = ['low_stock', 'schedule', 'new_sale', 'new_product', 'general', 'task_completed', 'task_assigned', 'workspace_invite'];
+    const normalizedType = allowedTypes.includes(type) ? type : 'general';
+
+    const notification = await Notification.create({
+      userId,
+      sentBy: 'system',
+      type: normalizedType,
+      title: String(title).trim(),
+      body: String(body).trim(),
+      icon: icon || '/logo.png',
+      data: data || {},
+      read: false,
+    });
 
     res.status(201).json({
       message: 'Notification created',

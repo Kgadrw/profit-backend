@@ -68,8 +68,8 @@ const getAllowedOrigins = () => {
   }
   
   // Default: Allow all trippo.rw subdomains and localhost
-  // This includes: trippo.rw, admin.trippo.rw, dashboard.trippo.rw
-  // And for local dev: localhost, admin.localhost, dashboard.localhost
+  // This includes: trippo.rw, admin.trippo.rw, bookfy.trippo.rw
+  // And for local dev: localhost, admin.localhost, bookfy.localhost
   return (origin, callback) => {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) {
@@ -90,8 +90,7 @@ const getAllowedOrigins = () => {
       // Allow localhost for development (any port, http or https)
       if (hostname === 'localhost' || 
           hostname === '127.0.0.1' ||
-          hostname.startsWith('admin.localhost') ||
-          hostname.startsWith('dashboard.localhost')) {
+          hostname.endsWith('.localhost')) {
         return callback(null, true);
       }
       
@@ -118,7 +117,7 @@ const corsOptions = {
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'X-Workspace-Mode', 'X-Workspace-Id', 'X-Requested-With'],
   exposedHeaders: ['Content-Length', 'X-Request-Id']
 };
 app.use(cors(corsOptions));

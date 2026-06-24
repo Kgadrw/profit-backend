@@ -80,23 +80,22 @@ const createTransporter = () => {
 
 // Generate email header with company logo, name, and sender info
 export const generateEmailHeader = (senderUser) => {
-  const companyName = senderUser.businessName || senderUser.name || 'Trippo';
-  // Use publicly accessible logo URL - can be overridden with COMPANY_LOGO_URL env variable
+  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
   const companyLogo = process.env.COMPANY_LOGO_URL || 'https://trippo.rw/logo.png';
-  const senderName = senderUser.name || 'Unknown';
-  const senderEmail = senderUser.email || '';
+  const senderName = senderUser?.name || 'Unknown';
+  const senderEmail = senderUser?.email || '';
 
   return `
     <div style="background-color: #ffffff; padding: 15px 20px; text-align: left; border-bottom: 1px solid #e2e8f0;">
       <div style="display: flex; align-items: center; gap: 12px;">
         <img 
           src="${companyLogo}" 
-          alt="Trippo Logo" 
+          alt="${companyName} Logo" 
           width="40" 
           height="40"
           style="width: 40px; height: 40px; display: block; border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; vertical-align: middle;" 
         />
-        <h1 style="color: #1e293b; margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.3px; line-height: 40px; vertical-align: middle;">Trippo</h1>
+        <h1 style="color: #1e293b; margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.3px; line-height: 40px; vertical-align: middle;">${companyName}</h1>
       </div>
     </div>
     <div style="background-color: #f8fafc; padding: 12px 20px; border-bottom: 1px solid #e2e8f0;">
@@ -111,14 +110,19 @@ export const generateEmailHeader = (senderUser) => {
   `;
 };
 
+const emailSignature = (senderUser) => {
+  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
+  return `<p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">${companyName}</p>`;
+};
+
 // Send email function
-export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail }) => {
+// Uses platform SMTP credentials, but can show the business name in the From header.
+// replyToEmail lets recipients reply directly to the business owner.
+export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail, replyToEmail }) => {
   try {
-    // Debug: Check if environment variables are loaded
     const hasSmtpUser = !!process.env.SMTP_USER;
     const hasSmtpPassword = !!process.env.SMTP_PASSWORD;
     
-    // Skip if SMTP is not configured
     if (!hasSmtpUser || !hasSmtpPassword) {
       console.warn('Email service not configured. Skipping email send.');
       console.warn('SMTP_USER exists:', hasSmtpUser);
@@ -128,27 +132,24 @@ export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail }
     }
 
     const transporter = createTransporter();
-
-    // Use custom from name/email if provided, otherwise use default
-    const fromDisplay = fromName 
-      ? `"${fromName}" <${fromEmail || process.env.SMTP_USER}>`
-      : `"Trippo" <${process.env.SMTP_USER}>`;
+    const smtpUser = process.env.SMTP_USER;
+    const displayName = fromName || process.env.SMTP_FROM_NAME || 'Trippo';
+    const replyTo = replyToEmail || fromEmail || process.env.SMTP_REPLY_TO || smtpUser;
 
     const mailOptions = {
-      from: fromDisplay,
+      from: `"${displayName}" <${smtpUser}>`,
       to,
       subject,
       text,
       html,
-      replyTo: fromEmail || process.env.SMTP_USER,
-      // Ensure images are loaded in email clients
+      replyTo,
       headers: {
         'X-Mailer': 'Trippo Email Service',
       },
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('Email sent successfully:', info.messageId);
+    console.log('Email sent successfully:', info.messageId, `(From: ${displayName} <${smtpUser}>)`);
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('Error sending email:', error);
@@ -201,7 +202,7 @@ export const sendUserScheduleNotification = async (user, schedule, senderUser) =
                   
                   <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
                     <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                    ${emailSignature(senderUser || user)}
                   </div>
                 </td>
               </tr>
@@ -219,7 +220,7 @@ export const sendUserScheduleNotification = async (user, schedule, senderUser) =
     text: message,
     html,
     fromName: companyName,
-    fromEmail: senderEmail || process.env.SMTP_USER,
+    replyToEmail: senderEmail || undefined,
   });
 };
 
@@ -272,7 +273,7 @@ export const sendClientScheduleNotification = async (client, schedule, senderUse
                   
                   <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
                     <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Thank you,</p>
-                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                    ${emailSignature(senderUser)}
                   </div>
                 </td>
               </tr>
@@ -290,7 +291,7 @@ export const sendClientScheduleNotification = async (client, schedule, senderUse
     text: message,
     html,
     fromName: companyName,
-    fromEmail: senderEmail || process.env.SMTP_USER,
+    replyToEmail: senderEmail || undefined,
   });
 };
 
@@ -339,7 +340,7 @@ export const sendMonthlyPaymentReminder = async (user, plan, senderUser, context
                   </p>
                   <div style="margin-top: 26px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
                     <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                    ${emailSignature(senderUser || user)}
                   </div>
                 </td>
               </tr>
@@ -357,7 +358,7 @@ export const sendMonthlyPaymentReminder = async (user, plan, senderUser, context
     text: message,
     html,
     fromName: companyName,
-    fromEmail: senderEmail,
+    replyToEmail: senderEmail || undefined,
   });
 };
 
@@ -416,7 +417,7 @@ export const sendRecurringExpenseReminder = async (user, recurringExpense, conte
                   </p>
                   <div style="margin-top: 26px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
                     <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                    ${emailSignature(user)}
                   </div>
                 </td>
               </tr>
@@ -434,7 +435,7 @@ export const sendRecurringExpenseReminder = async (user, recurringExpense, conte
     text: message,
     html,
     fromName: user.businessName || user.name || 'Trippo',
-    fromEmail: user.email || process.env.SMTP_USER,
+    replyToEmail: user.email || undefined,
   });
 };
 
@@ -479,7 +480,7 @@ export const sendCompletionNotification = async (schedule, senderUser, completio
                     
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
                       <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                      <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                      ${emailSignature(senderUser)}
                     </div>
                   </td>
                 </tr>
@@ -497,7 +498,7 @@ export const sendCompletionNotification = async (schedule, senderUser, completio
       text: message,
       html: userHtml,
       fromName: companyName,
-      fromEmail: senderEmail || process.env.SMTP_USER,
+      replyToEmail: senderEmail || undefined,
     });
   }
 
@@ -533,7 +534,7 @@ export const sendCompletionNotification = async (schedule, senderUser, completio
                     
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
                       <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Thank you,</p>
-                      <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
+                      ${emailSignature(senderUser)}
                     </div>
                   </td>
                 </tr>
@@ -551,7 +552,7 @@ export const sendCompletionNotification = async (schedule, senderUser, completio
       text: message,
       html: clientHtml,
       fromName: companyName,
-      fromEmail: senderEmail || process.env.SMTP_USER,
+      replyToEmail: senderEmail || undefined,
     });
   }
 };

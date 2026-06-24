@@ -1,6 +1,8 @@
 // Schedule Controller
 import Schedule from '../models/Schedule.js';
 import Client from '../models/Client.js';
+import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
+import { handleScopeError } from '../utils/scopeErrors.js';
 
 // Helper function to calculate next due date for recurring schedules
 const calculateNextDueDate = (dueDate, frequency, repeatUntil) => {
@@ -35,23 +37,20 @@ const calculateNextDueDate = (dueDate, frequency, repeatUntil) => {
 // Get all schedules for a user
 export const getSchedules = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access schedule data' });
-    }
+    assertPageAccess(req, 'schedules');
     const { status, upcoming, clientId } = req.query;
-    
-    let query = { userId };
-    
+
+    const query = buildListQuery(req);
+
     if (status) {
       query.status = status;
     }
-    
+
     if (upcoming === 'true') {
       query.dueDate = { $gte: new Date() };
       query.status = 'pending';
     }
-    
+
     if (clientId) {
       query.clientId = clientId;
     }
@@ -59,32 +58,28 @@ export const getSchedules = async (req, res) => {
     const schedules = await Schedule.find(query)
       .populate('clientId', 'name email phone businessType')
       .sort({ dueDate: 1 });
-    
+
     res.json({ data: schedules });
   } catch (error) {
     console.error('Error fetching schedules:', error);
-    res.status(500).json({ error: 'Failed to fetch schedules' });
+    handleScopeError(res, error);
   }
 };
 
-// Get a single schedule
 export const getSchedule = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access schedule data' });
-    }
-    const schedule = await Schedule.findOne({ _id: req.params.id, userId })
+    assertPageAccess(req, 'schedules');
+    const schedule = await Schedule.findOne(buildListQuery(req, { _id: req.params.id }))
       .populate('clientId', 'name email phone businessType');
-    
+
     if (!schedule) {
       return res.status(404).json({ error: 'Schedule not found' });
     }
-    
+
     res.json({ data: schedule });
   } catch (error) {
     console.error('Error fetching schedule:', error);
-    res.status(500).json({ error: 'Failed to fetch schedule' });
+    handleScopeError(res, error);
   }
 };
 
@@ -108,6 +103,7 @@ export const createSchedule = async (req, res) => {
       clientNotificationMessage,
       advanceNotificationDays,
       repeatUntil,
+      automationType,
     } = req.body;
 
     if (!title || !title.trim()) {
@@ -141,6 +137,7 @@ export const createSchedule = async (req, res) => {
       clientId: clientId,
       dueDate: parsedDueDate, // Preserves full date and time
       frequency: frequency || 'once',
+      automationType: automationType || 'custom',
       amount: amount !== undefined && amount !== null && amount !== '' ? Number(amount) : undefined,
       notifyUser: notifyUser !== undefined ? notifyUser : true,
       notifyClient: notifyClient !== undefined ? notifyClient : false,
@@ -199,6 +196,7 @@ export const updateSchedule = async (req, res) => {
       clientNotificationMessage,
       advanceNotificationDays,
       repeatUntil,
+      automationType,
     } = req.body;
 
     if (title !== undefined) schedule.title = title.trim();
@@ -211,6 +209,7 @@ export const updateSchedule = async (req, res) => {
       schedule.dueDate = parsedDueDate; // Preserves full date and time
     }
     if (frequency !== undefined) schedule.frequency = frequency;
+    if (automationType !== undefined) schedule.automationType = automationType || 'custom';
     if (amount !== undefined) schedule.amount = amount !== null && amount !== '' ? Number(amount) : undefined;
     if (status !== undefined) schedule.status = status;
     if (notifyUser !== undefined) schedule.notifyUser = notifyUser;

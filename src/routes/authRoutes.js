@@ -1,43 +1,49 @@
 // Authentication Routes
 import express from 'express';
-import { register, sendRegistrationOtp, login, getCurrentUser, updateUser, changePin, deleteAccount, forgotPin, resetPin, checkEmail, verifyTicket } from '../controllers/authController.js';
+import {
+  register,
+  sendRegistrationOtp,
+  login,
+  getCurrentUser,
+  updateUser,
+  changePassword,
+  deleteAccount,
+  forgotPassword,
+  resetPassword,
+  checkEmail,
+  verifyTicket,
+  googleAuth,
+} from '../controllers/authController.js';
 import { rateLimiters } from '../middleware/rateLimiter.js';
-import { validateRegister, validateLogin, validateSendRegistrationOtp, validateForgotPin, validateResetPin } from '../middleware/validation.js';
+import {
+  validateRegister,
+  validateLogin,
+  validateSendRegistrationOtp,
+  validateForgotPassword,
+  validateResetPassword,
+} from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Registration email verification
 router.post('/register/send-otp', rateLimiters.otp, validateSendRegistrationOtp, sendRegistrationOtp);
-
-// Register a new user (with rate limiting and validation)
 router.post('/register', rateLimiters.auth, validateRegister, register);
-
-// Login (with strict rate limiting and validation)
 router.post('/login', rateLimiters.auth, validateLogin, login);
-
-// Check email to determine user role (for role detection)
+router.post('/google', rateLimiters.auth, googleAuth);
 router.post('/check-email', rateLimiters.auth, checkEmail);
 
-// Forgot PIN - Send OTP (with rate limiting)
-router.post('/forgot-pin', rateLimiters.otp, validateForgotPin, forgotPin);
+router.post('/forgot-password', rateLimiters.otp, validateForgotPassword, forgotPassword);
+router.post('/reset-password', rateLimiters.otp, validateResetPassword, resetPassword);
+// Legacy aliases
+router.post('/forgot-pin', rateLimiters.otp, validateForgotPassword, forgotPassword);
+router.post('/reset-pin', rateLimiters.otp, validateResetPassword, resetPassword);
 
-// Reset PIN - Verify OTP and reset (with rate limiting)
-router.post('/reset-pin', rateLimiters.otp, validateResetPin, resetPin);
-
-// Public ticket verification (no auth)
 router.get('/verify-ticket', rateLimiters.general, verifyTicket);
 
-// Get current user (requires authentication)
 router.get('/me', authenticateUser, getCurrentUser);
-
-// Update user information (requires authentication)
 router.put('/update', authenticateUser, updateUser);
-
-// Change PIN (requires authentication)
-router.put('/change-pin', authenticateUser, changePin);
-
-// Delete account (requires authentication)
+router.put('/change-password', authenticateUser, changePassword);
+router.put('/change-pin', authenticateUser, changePassword);
 router.delete('/delete-account', authenticateUser, deleteAccount);
 
 export default router;

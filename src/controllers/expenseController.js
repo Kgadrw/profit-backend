@@ -1,4 +1,7 @@
 import Expense from '../models/Expense.js';
+import Vendor from '../models/Vendor.js';
+import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
+import { handleScopeError } from '../utils/scopeErrors.js';
 
 const normalizeExpenseDate = (value) => {
   if (!value) return new Date();
@@ -14,13 +17,9 @@ const normalizeExpenseDate = (value) => {
 // Get all expenses for current user (optionally filtered by date range)
 export const getExpenses = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access expense data' });
-    }
-
+    assertPageAccess(req, 'finance');
     const { startDate, endDate } = req.query;
-    const query = { userId };
+    const query = buildListQuery(req);
 
     if (startDate || endDate) {
       query.date = {};
@@ -40,19 +39,15 @@ export const getExpenses = async (req, res) => {
     res.json({ data: expenses });
   } catch (error) {
     console.error('Error fetching expenses:', error);
-    res.status(500).json({ error: 'Failed to fetch expenses' });
+    handleScopeError(res, error);
   }
 };
 
 // Get single expense
 export const getExpense = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access expense data' });
-    }
-
-    const expense = await Expense.findOne({ _id: req.params.id, userId });
+    assertPageAccess(req, 'finance');
+    const expense = await Expense.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
     }
@@ -60,19 +55,30 @@ export const getExpense = async (req, res) => {
     res.json({ data: expense });
   } catch (error) {
     console.error('Error fetching expense:', error);
-    res.status(500).json({ error: 'Failed to fetch expense' });
+    handleScopeError(res, error);
   }
 };
 
 // Create expense
 export const createExpense = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot create expenses' });
     }
 
-    const { title, amount, category, date, note } = req.body;
+    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId } = req.body;
+
+    let vendorName;
+    let resolvedVendorId;
+    if (vendorId) {
+      const vendor = await Vendor.findOne(buildListQuery(req, { _id: vendorId }));
+      if (vendor) {
+        resolvedVendorId = vendor._id;
+        vendorName = vendor.name;
+      }
+    }
 
     const expense = new Expense({
       title: title?.trim(),
@@ -80,7 +86,15 @@ export const createExpense = async (req, res) => {
       category: category ? category.trim() : 'general',
       date: normalizeExpenseDate(date),
       note: note ? note.trim() : undefined,
-      userId,
+      vendorId: resolvedVendorId,
+      vendorName,
+      accountId: accountId || undefined,
+      paymentMethod: paymentMethod || 'cash',
+      bankAccountName: bankAccountName ? bankAccountName.trim() : undefined,
+      bankAccountNumber: bankAccountNumber ? bankAccountNumber.trim() : undefined,
+      receiptUrl: receiptUrl || undefined,
+      receiptFileName: receiptFileName || undefined,
+      ...buildCreateScope(req),
     });
 
     await expense.save();
@@ -97,13 +111,14 @@ export const createExpense = async (req, res) => {
 // Update expense
 export const updateExpense = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot update expenses' });
     }
 
-    const { title, amount, category, date, note } = req.body;
-    const expense = await Expense.findOne({ _id: req.params.id, userId });
+    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId } = req.body;
+    const expense = await Expense.findOne(buildListQuery(req, { _id: req.params.id }));
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
@@ -114,6 +129,22 @@ export const updateExpense = async (req, res) => {
     if (category !== undefined) expense.category = category ? category.trim() : 'general';
     if (date !== undefined) expense.date = normalizeExpenseDate(date);
     if (note !== undefined) expense.note = note ? note.trim() : undefined;
+    if (vendorId !== undefined) {
+      if (vendorId) {
+        const vendor = await Vendor.findOne(buildListQuery(req, { _id: vendorId }));
+        expense.vendorId = vendor ? vendor._id : undefined;
+        expense.vendorName = vendor ? vendor.name : undefined;
+      } else {
+        expense.vendorId = undefined;
+        expense.vendorName = undefined;
+      }
+    }
+    if (accountId !== undefined) expense.accountId = accountId || undefined;
+    if (paymentMethod !== undefined) expense.paymentMethod = paymentMethod || 'cash';
+    if (bankAccountName !== undefined) expense.bankAccountName = bankAccountName ? bankAccountName.trim() : undefined;
+    if (bankAccountNumber !== undefined) expense.bankAccountNumber = bankAccountNumber ? bankAccountNumber.trim() : undefined;
+    if (receiptUrl !== undefined) expense.receiptUrl = receiptUrl || undefined;
+    if (receiptFileName !== undefined) expense.receiptFileName = receiptFileName || undefined;
 
     await expense.save();
     res.json({ data: expense });
@@ -129,12 +160,13 @@ export const updateExpense = async (req, res) => {
 // Delete expense
 export const deleteExpense = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot delete expenses' });
     }
 
-    const expense = await Expense.findOneAndDelete({ _id: req.params.id, userId });
+    const expense = await Expense.findOneAndDelete(buildListQuery(req, { _id: req.params.id }));
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
     }

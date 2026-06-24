@@ -1,4 +1,4 @@
-// OTP Model for PIN reset
+// OTP Model for email verification and password reset
 import mongoose from 'mongoose';
 
 const otpSchema = new mongoose.Schema({
@@ -15,15 +15,15 @@ const otpSchema = new mongoose.Schema({
   },
   purpose: {
     type: String,
-    enum: ['pin_reset', 'registration'],
-    default: 'pin_reset',
+    enum: ['password_reset', 'pin_reset', 'registration'],
+    default: 'password_reset',
     index: true,
   },
   expiresAt: {
     type: Date,
     required: true,
-    default: () => new Date(Date.now() + 10 * 60 * 1000), // 10 minutes from now
-    index: { expireAfterSeconds: 0 }, // Auto-delete expired OTPs
+    default: () => new Date(Date.now() + 10 * 60 * 1000),
+    index: { expireAfterSeconds: 0 },
   },
   used: {
     type: Boolean,
@@ -32,21 +32,31 @@ const otpSchema = new mongoose.Schema({
   attempts: {
     type: Number,
     default: 0,
-    max: 5, // Max 5 verification attempts
+    max: 5,
   },
 }, {
   timestamps: true,
 });
 
-// Find valid OTP (purpose: pin_reset | registration)
-otpSchema.statics.findValidOTP = async function(email, otp, purpose = 'pin_reset') {
+otpSchema.statics.findValidOTP = async function findValidOTP(email, otp, purpose = 'password_reset') {
   const normalizedEmail = email.toLowerCase().trim();
-  const purposeFilter =
-    purpose === 'pin_reset'
-      ? { $or: [{ purpose: 'pin_reset' }, { purpose: { $exists: false } }] }
-      : { purpose };
+  let purposeFilter;
 
-  return await this.findOne({
+  if (purpose === 'registration') {
+    purposeFilter = { purpose: 'registration' };
+  } else if (purpose === 'password_reset') {
+    purposeFilter = {
+      $or: [
+        { purpose: 'password_reset' },
+        { purpose: 'pin_reset' },
+        { purpose: { $exists: false } },
+      ],
+    };
+  } else {
+    purposeFilter = { purpose };
+  }
+
+  return this.findOne({
     email: normalizedEmail,
     otp,
     ...purposeFilter,
@@ -56,14 +66,12 @@ otpSchema.statics.findValidOTP = async function(email, otp, purpose = 'pin_reset
   });
 };
 
-// Mark OTP as used
-otpSchema.methods.markAsUsed = async function() {
+otpSchema.methods.markAsUsed = async function markAsUsed() {
   this.used = true;
   await this.save();
 };
 
-// Increment attempts
-otpSchema.methods.incrementAttempts = async function() {
+otpSchema.methods.incrementAttempts = async function incrementAttempts() {
   this.attempts += 1;
   await this.save();
 };

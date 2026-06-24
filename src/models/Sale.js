@@ -88,6 +88,32 @@ const saleSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    default: null,
+    index: true,
+  },
+  createdByUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  createdByName: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  updatedByUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  updatedByName: {
+    type: String,
+    trim: true,
+    default: null,
+  },
 }, {
   timestamps: true,
 });
@@ -100,6 +126,7 @@ saleSchema.index({ userId: 1, isService: 1, date: -1 });
 saleSchema.index({ userId: 1, workerId: 1, date: -1 });
 saleSchema.index({ userId: 1, serviceId: 1 });
 saleSchema.index({ userId: 1, inventoryId: 1, date: -1 });
+saleSchema.index({ workspaceId: 1, date: -1 });
 
 const Sale = mongoose.model('Sale', saleSchema);
 

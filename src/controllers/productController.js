@@ -1,33 +1,19 @@
 // Product Controller
 import Product from '../models/Product.js';
 import Inventory from '../models/Inventory.js';
-import { emitToUser } from '../utils/websocket.js';
+import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
+import { buildListQuery, buildCreateScope, buildActorFields, assertPageAccess } from '../utils/dataScope.js';
 
-// Helper to get userId from request
-const getUserId = async (req) => {
-  // First try to get userId from header
-  const userIdFromHeader = req.headers['x-user-id'];
-  if (userIdFromHeader) {
-    // Validate it's a valid MongoDB ObjectId
-    const mongoose = (await import('mongoose')).default;
-    if (mongoose.Types.ObjectId.isValid(userIdFromHeader)) {
-      return userIdFromHeader;
-    }
-  }
-  
-  // If no valid userId in header, return null (user must login)
-  return null;
-};
+function handleScopeError(res, error) {
+  const status = error.statusCode || 500;
+  return res.status(status).json({ error: error.message || 'Request failed' });
+}
 
 export const getProducts = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
+    assertPageAccess(req, 'products');
     const { inventoryId } = req.query;
-    const query = { userId };
+    const query = buildListQuery(req);
     if (inventoryId) {
       query.inventoryId = inventoryId === 'null' ? null : inventoryId;
     }
@@ -36,43 +22,37 @@ export const getProducts = async (req, res) => {
     res.json({ data: products });
   } catch (error) {
     console.error('Get products error:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch products' });
+    handleScopeError(res, error);
   }
 };
 
 export const getProduct = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
-    const product = await Product.findOne({ _id: req.params.id, userId });
+    assertPageAccess(req, 'products');
+    const query = buildListQuery(req, { _id: req.params.id });
+    const product = await Product.findOne(query);
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
     res.json({ data: product });
   } catch (error) {
     console.error('Get product error:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch product' });
+    handleScopeError(res, error);
   }
 };
 
 export const createProduct = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
+    assertPageAccess(req, 'products');
     const productData = {
       ...req.body,
-      userId,
+      ...buildCreateScope(req),
+      ...buildActorFields(req),
     };
 
-    // Validate inventory ownership if provided
     if (productData.inventoryId) {
-      const inv = await Inventory.findOne({ _id: productData.inventoryId, userId });
+      const invQuery = buildListQuery(req, { _id: productData.inventoryId });
+      const inv = await Inventory.findOne(invQuery);
       if (!inv) {
         return res.status(404).json({ error: 'Inventory not found' });
       }
@@ -80,44 +60,39 @@ export const createProduct = async (req, res) => {
       productData.inventoryId = null;
     }
 
-    // Convert string numbers to numbers
     if (productData.costPrice) productData.costPrice = parseFloat(productData.costPrice);
     if (productData.sellingPrice) productData.sellingPrice = parseFloat(productData.sellingPrice);
-    if (productData.stock) productData.stock = parseInt(productData.stock);
-    if (productData.minStock) productData.minStock = parseInt(productData.minStock);
-    if (productData.packageQuantity) productData.packageQuantity = parseInt(productData.packageQuantity);
+    if (productData.stock) productData.stock = parseInt(productData.stock, 10);
+    if (productData.minStock) productData.minStock = parseInt(productData.minStock, 10);
+    if (productData.packageQuantity) productData.packageQuantity = parseInt(productData.packageQuantity, 10);
 
     if (!productData.category || !String(productData.category).trim()) {
       productData.category = 'General';
     }
 
-    // Check for duplicate product (same name, category, and productType)
     const normalizedName = productData.name.trim().toLowerCase();
     const normalizedCategory = productData.category.trim().toLowerCase();
     const productType = productData.productType?.trim() || null;
 
-    const duplicateQuery = {
-      userId,
-      name: { $regex: new RegExp(`^${normalizedName}$`, 'i') }, // Case-insensitive match
-      category: { $regex: new RegExp(`^${normalizedCategory}$`, 'i') }, // Case-insensitive match
-    };
+    const duplicateQuery = buildListQuery(req, {
+      name: { $regex: new RegExp(`^${normalizedName}$`, 'i') },
+      category: { $regex: new RegExp(`^${normalizedCategory}$`, 'i') },
+    });
 
-    // Include productType in the query if it exists, otherwise check for null/undefined
     if (productType) {
       duplicateQuery.productType = productType;
     } else {
       duplicateQuery.$or = [
         { productType: { $exists: false } },
         { productType: null },
-        { productType: '' }
+        { productType: '' },
       ];
     }
 
     const existingProduct = await Product.findOne(duplicateQuery);
     if (existingProduct) {
-      // If product is out of stock, return it so frontend can offer to update/restock
       if (existingProduct.stock === 0) {
-        return res.status(409).json({ 
+        return res.status(409).json({
           error: 'A product with the same name, category, and type already exists and is out of stock.',
           duplicate: true,
           outOfStock: true,
@@ -129,138 +104,96 @@ export const createProduct = async (req, res) => {
             costPrice: existingProduct.costPrice,
             sellingPrice: existingProduct.sellingPrice,
             productType: existingProduct.productType,
-          }
+          },
         });
       }
-      return res.status(409).json({ 
+      return res.status(409).json({
         error: 'A product with the same name, category, and type already exists.',
         duplicate: true,
-        outOfStock: false
+        outOfStock: false,
       });
     }
 
     const product = new Product(productData);
     await product.save();
 
-    // Emit WebSocket event for real-time update
-    emitToUser(userId, 'product:created', product.toObject());
+    await broadcastScopeChange(req, 'product:created', product);
 
-    res.status(201).json({ 
+    res.status(201).json({
       message: 'Product created successfully',
-      data: product 
+      data: product,
     });
   } catch (error) {
     console.error('Create product error:', error);
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message || 'Failed to create product' });
+    handleScopeError(res, error);
   }
 };
 
 export const updateProduct = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
-    const updateData = { ...req.body };
-    
-    // Remove MongoDB version field to avoid version conflicts
+    assertPageAccess(req, 'products');
+    const updateData = {
+      ...req.body,
+      ...buildActorFields(req, { isUpdate: true }),
+    };
     delete updateData.__v;
-    
-    // Convert string numbers to numbers
+    delete updateData.userId;
+    delete updateData.workspaceId;
+    delete updateData.createdByUserId;
+    delete updateData.createdByName;
+
     if (updateData.costPrice) updateData.costPrice = parseFloat(updateData.costPrice);
     if (updateData.sellingPrice) updateData.sellingPrice = parseFloat(updateData.sellingPrice);
-    if (updateData.stock) updateData.stock = parseInt(updateData.stock);
-    if (updateData.minStock) updateData.minStock = parseInt(updateData.minStock);
-    if (updateData.packageQuantity) updateData.packageQuantity = parseInt(updateData.packageQuantity);
+    if (updateData.stock) updateData.stock = parseInt(updateData.stock, 10);
+    if (updateData.minStock) updateData.minStock = parseInt(updateData.minStock, 10);
+    if (updateData.packageQuantity) updateData.packageQuantity = parseInt(updateData.packageQuantity, 10);
 
-    // Use $set operator to avoid version conflicts
+    const query = buildListQuery(req, { _id: req.params.id });
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, userId },
+      query,
       { $set: updateData },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    // Emit WebSocket event for real-time update
-    emitToUser(userId, 'product:updated', product.toObject());
+    await broadcastScopeChange(req, 'product:updated', product);
 
-    // Keep product even when stock reaches 0 so it can be shown in Low Stock Alert
-    res.json({ 
+    res.json({
       message: 'Product updated successfully',
-      data: product 
+      data: product,
     });
   } catch (error) {
     console.error('Update product error:', error);
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    // Handle VersionError specifically
-    if (error.name === 'VersionError') {
-      // Retry with fresh data from database
-      try {
-        const freshProduct = await Product.findOne({ _id: req.params.id, userId });
-        if (!freshProduct) {
-          return res.status(404).json({ error: 'Product not found' });
-        }
-        
-        const updateData = { ...req.body };
-        delete updateData.__v;
-        delete updateData._id;
-        
-        // Convert string numbers to numbers
-        if (updateData.costPrice) updateData.costPrice = parseFloat(updateData.costPrice);
-        if (updateData.sellingPrice) updateData.sellingPrice = parseFloat(updateData.sellingPrice);
-        if (updateData.stock) updateData.stock = parseInt(updateData.stock);
-        if (updateData.minStock) updateData.minStock = parseInt(updateData.minStock);
-        if (updateData.packageQuantity) updateData.packageQuantity = parseInt(updateData.packageQuantity);
-        
-        // Update with fresh version
-        Object.assign(freshProduct, updateData);
-        const updatedProduct = await freshProduct.save();
-        
-        emitToUser(userId, 'product:updated', updatedProduct.toObject());
-        
-        return res.json({ 
-          message: 'Product updated successfully',
-          data: updatedProduct 
-        });
-      } catch (retryError) {
-        console.error('Retry update product error:', retryError);
-        return res.status(500).json({ error: 'Failed to update product due to version conflict. Please refresh and try again.' });
-      }
-    }
-    res.status(500).json({ error: error.message || 'Failed to update product' });
+    handleScopeError(res, error);
   }
 };
 
 export const deleteProduct = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
-    const product = await Product.findOneAndDelete({ _id: req.params.id, userId });
+    assertPageAccess(req, 'products');
+    const query = buildListQuery(req, { _id: req.params.id });
+    const product = await Product.findOneAndDelete(query);
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    // Emit WebSocket event for real-time update
-    emitToUser(userId, 'product:deleted', { _id: product._id });
+    await broadcastScopeChange(req, 'product:deleted', { _id: product._id, workspaceId: product.workspaceId });
 
-    res.json({ 
+    res.json({
       message: 'Product deleted successfully',
-      data: product 
+      data: product,
     });
   } catch (error) {
     console.error('Delete product error:', error);
-    res.status(500).json({ error: error.message || 'Failed to delete product' });
+    handleScopeError(res, error);
   }
 };

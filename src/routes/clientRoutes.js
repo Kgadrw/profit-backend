@@ -3,6 +3,7 @@ import express from 'express';
 import {
   getClients,
   getClient,
+  getClientActivity,
   createClient,
   updateClient,
   deleteClient,
@@ -11,15 +12,18 @@ import { apiLimiter } from '../middleware/security.js';
 import { validateObjectId } from '../middleware/validation.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { requirePlusAccess } from '../middleware/requirePlusAccess.js';
+import { resolveWorkspaceContext } from '../middleware/workspaceContext.js';
 
 const router = express.Router();
 
 // All client routes require authentication and rate limiting
 router.use(authenticateUser);
+router.use(resolveWorkspaceContext);
 router.use(requirePlusAccess);
 router.use(apiLimiter);
 
 router.get('/', getClients);
+router.get('/:id/activity', validateObjectId, getClientActivity);
 router.get('/:id', validateObjectId, getClient);
 router.post('/', createClient);
 router.put('/:id', validateObjectId, updateClient);

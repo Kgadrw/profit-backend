@@ -3,23 +3,15 @@ import Sale from '../models/Sale.js';
 import Product from '../models/Product.js';
 import Service from '../models/Service.js';
 import Client from '../models/Client.js';
-import { emitToUser } from '../utils/websocket.js';
+import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
+import { buildListQuery, buildCreateScope, buildActorFields, assertPageAccess } from '../utils/dataScope.js';
 
-// Helper to get userId from request
-const getUserId = async (req) => {
-  // First try to get userId from header
-  const userIdFromHeader = req.headers['x-user-id'];
-  if (userIdFromHeader) {
-    // Validate it's a valid MongoDB ObjectId
-    const mongoose = (await import('mongoose')).default;
-    if (mongoose.Types.ObjectId.isValid(userIdFromHeader)) {
-    return userIdFromHeader;
-  }
-  }
-  
-  // If no valid userId in header, return null (user must login)
-  return null;
-};
+function handleScopeError(res, error) {
+  const status = error.statusCode || 500;
+  return res.status(status).json({ error: error.message || 'Request failed' });
+}
+
+const getUserId = (req) => req.user?._id;
 
 // Helper to deduct stock for inventory products (skip services)
 const deductProductStock = async (product, quantity) => {
@@ -40,29 +32,30 @@ const restoreProductStock = async (product, quantity) => {
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Resolve inventory product by Mongo id or exact name (case-insensitive). */
-const resolveInventoryProduct = async (userId, productId, productName) => {
+const resolveInventoryProduct = async (req, productId, productName) => {
   const mongoose = (await import('mongoose')).default;
 
   if (productId && mongoose.Types.ObjectId.isValid(String(productId))) {
-    const byId = await Product.findOne({ _id: productId, userId });
+    const byId = await Product.findOne(buildListQuery(req, { _id: productId }));
     if (byId && byId.category !== 'service') return byId;
   }
 
   const name = String(productName || '').trim();
   if (name) {
-    const byName = await Product.findOne({
-      userId,
-      name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
-      category: { $ne: 'service' },
-    });
+    const byName = await Product.findOne(
+      buildListQuery(req, {
+        name: { $regex: new RegExp(`^${escapeRegex(name)}$`, 'i') },
+        category: { $ne: 'service' },
+      }),
+    );
     if (byName) return byName;
   }
 
   return null;
 };
 
-const applySaleStockDeduction = async (userId, saleData) => {
-  const product = await resolveInventoryProduct(userId, saleData.productId, saleData.product);
+const applySaleStockDeduction = async (req, saleData) => {
+  const product = await resolveInventoryProduct(req, saleData.productId, saleData.product);
   if (!product) return null;
 
   saleData.productId = product._id;
@@ -79,20 +72,16 @@ const applySaleStockDeduction = async (userId, saleData) => {
 
   const updated = await deductProductStock(product, qty);
   if (updated) {
-    emitToUser(userId, 'product:updated', updated.toObject());
+    await broadcastScopeChange(req, 'product:updated', updated);
   }
   return updated;
 };
 
 export const getSales = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
+    assertPageAccess(req, 'sales');
     const { startDate, endDate, product, isService, saleType, workerId, inventoryId } = req.query;
-    const query = { userId };
+    const query = buildListQuery(req);
 
     if (startDate || endDate) {
       query.date = {};
@@ -135,38 +124,33 @@ export const getSales = async (req, res) => {
     res.json({ data: sales });
   } catch (error) {
     console.error('Get sales error:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch sales' });
+    handleScopeError(res, error);
   }
 };
 
 export const getSale = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
-    const sale = await Sale.findOne({ _id: req.params.id, userId });
+    assertPageAccess(req, 'sales');
+    const query = buildListQuery(req, { _id: req.params.id });
+    const sale = await Sale.findOne(query);
     if (!sale) {
       return res.status(404).json({ error: 'Sale not found' });
     }
     res.json({ data: sale });
   } catch (error) {
     console.error('Get sale error:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch sale' });
+    handleScopeError(res, error);
   }
 };
 
 export const createSale = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
+    assertPageAccess(req, 'sales');
+    const userId = getUserId(req);
     const saleData = {
       ...req.body,
-      userId,
+      ...buildCreateScope(req),
+      ...buildActorFields(req),
     };
 
     // Convert string numbers to numbers
@@ -247,7 +231,7 @@ export const createSale = async (req, res) => {
     } else {
       // Handle product sales — deduct stock by productId or product name
       try {
-        await applySaleStockDeduction(userId, saleData);
+        await applySaleStockDeduction(req, saleData);
       } catch (stockErr) {
         if (stockErr.statusCode === 400) {
           return res.status(400).json({ error: stockErr.message });
@@ -259,8 +243,7 @@ export const createSale = async (req, res) => {
     const sale = new Sale(saleData);
     await sale.save();
 
-    // Emit WebSocket event for real-time update
-    emitToUser(userId, 'sale:created', sale.toObject());
+    await broadcastScopeChange(req, 'sale:created', sale);
 
     res.status(201).json({ 
       message: 'Sale recorded successfully',
@@ -271,17 +254,13 @@ export const createSale = async (req, res) => {
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message || 'Failed to create sale' });
+    handleScopeError(res, error);
   }
 };
 
 export const createBulkSales = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
+    assertPageAccess(req, 'sales');
     const { sales } = req.body;
     if (!Array.isArray(sales) || sales.length === 0) {
       return res.status(400).json({ error: 'Sales array is required' });
@@ -291,7 +270,8 @@ export const createBulkSales = async (req, res) => {
     for (const saleData of sales) {
       const processedSale = {
         ...saleData,
-        userId,
+        ...buildCreateScope(req),
+        ...buildActorFields(req),
       };
 
       // Convert string numbers to numbers
@@ -303,7 +283,7 @@ export const createBulkSales = async (req, res) => {
 
       // Update product stock for inventory products
       try {
-        await applySaleStockDeduction(userId, processedSale);
+        await applySaleStockDeduction(req, processedSale);
       } catch (stockErr) {
         if (stockErr.statusCode === 400) {
           return res.status(400).json({ error: stockErr.message });
@@ -313,6 +293,7 @@ export const createBulkSales = async (req, res) => {
 
       const sale = new Sale(processedSale);
       await sale.save();
+      await broadcastScopeChange(req, 'sale:created', sale);
       createdSales.push(sale);
     }
 
@@ -322,24 +303,28 @@ export const createBulkSales = async (req, res) => {
     });
   } catch (error) {
     console.error('Create bulk sales error:', error);
-    res.status(500).json({ error: error.message || 'Failed to create sales' });
+    handleScopeError(res, error);
   }
 };
 
 export const updateSale = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
+    assertPageAccess(req, 'sales');
+    const userId = getUserId(req);
 
-    // Find the existing sale first to get old values
-    const oldSale = await Sale.findOne({ _id: req.params.id, userId });
+    const oldSale = await Sale.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!oldSale) {
       return res.status(404).json({ error: 'Sale not found' });
     }
 
-    const updateData = { ...req.body };
+    const updateData = {
+      ...req.body,
+      ...buildActorFields(req, { isUpdate: true }),
+    };
+    delete updateData.userId;
+    delete updateData.workspaceId;
+    delete updateData.createdByUserId;
+    delete updateData.createdByName;
     
     // Convert string numbers to numbers
     if (updateData.quantity) updateData.quantity = parseInt(updateData.quantity);
@@ -348,25 +333,22 @@ export const updateSale = async (req, res) => {
     if (updateData.profit) updateData.profit = parseFloat(updateData.profit);
     if (updateData.date) updateData.date = new Date(updateData.date);
 
-    // Handle stock updates if quantity or productId changed
     const quantityChanged = updateData.quantity !== undefined && updateData.quantity !== oldSale.quantity;
     const productIdChanged = updateData.productId !== undefined && 
                              updateData.productId.toString() !== oldSale.productId?.toString();
 
     if (quantityChanged || productIdChanged) {
-      // Restore stock from old sale
       if (oldSale.productId || oldSale.product) {
-        const oldProduct = await resolveInventoryProduct(userId, oldSale.productId, oldSale.product);
+        const oldProduct = await resolveInventoryProduct(req, oldSale.productId, oldSale.product);
         if (oldProduct) {
           const restored = await restoreProductStock(oldProduct, oldSale.quantity);
-          if (restored) emitToUser(userId, 'product:updated', restored.toObject());
+          if (restored) await broadcastScopeChange(req, 'product:updated', restored);
         }
       }
 
-      // Reduce stock for new/updated sale
       const newProductId = updateData.productId || oldSale.productId;
       const newProductName = updateData.product || oldSale.product;
-      const newProduct = await resolveInventoryProduct(userId, newProductId, newProductName);
+      const newProduct = await resolveInventoryProduct(req, newProductId, newProductName);
       if (newProduct) {
         const newQuantity = updateData.quantity !== undefined ? updateData.quantity : oldSale.quantity;
         if (newQuantity > (newProduct.stock ?? 0)) {
@@ -375,13 +357,13 @@ export const updateSale = async (req, res) => {
           });
         }
         const updated = await deductProductStock(newProduct, newQuantity);
-        if (updated) emitToUser(userId, 'product:updated', updated.toObject());
+        if (updated) await broadcastScopeChange(req, 'product:updated', updated);
         updateData.productId = newProduct._id;
       }
     }
 
     const sale = await Sale.findOneAndUpdate(
-      { _id: req.params.id, userId },
+      buildListQuery(req, { _id: req.params.id }),
       updateData,
       { new: true, runValidators: true }
     )
@@ -391,8 +373,7 @@ export const updateSale = async (req, res) => {
       return res.status(404).json({ error: 'Sale not found' });
     }
 
-    // Emit WebSocket event for real-time update
-    emitToUser(userId, 'sale:updated', sale.toObject());
+    await broadcastScopeChange(req, 'sale:updated', sale);
 
     res.json({ 
       message: 'Sale updated successfully',
@@ -403,37 +384,31 @@ export const updateSale = async (req, res) => {
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message || 'Failed to update sale' });
+    handleScopeError(res, error);
   }
 };
 
 export const deleteSale = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
+    assertPageAccess(req, 'sales');
+    const userId = getUserId(req);
 
-    // Find the sale first to get productId and quantity before deleting
-    const sale = await Sale.findOne({ _id: req.params.id, userId });
+    const sale = await Sale.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!sale) {
       return res.status(404).json({ error: 'Sale not found' });
     }
 
-    // Restore product stock
     if (sale.productId || sale.product) {
-      const product = await resolveInventoryProduct(userId, sale.productId, sale.product);
+      const product = await resolveInventoryProduct(req, sale.productId, sale.product);
       if (product) {
         const restored = await restoreProductStock(product, sale.quantity);
-        if (restored) emitToUser(userId, 'product:updated', restored.toObject());
+        if (restored) await broadcastScopeChange(req, 'product:updated', restored);
       }
     }
 
-    // Now delete the sale
     await Sale.findByIdAndDelete(req.params.id);
 
-    // Emit WebSocket event for real-time update
-    emitToUser(userId, 'sale:deleted', { _id: sale._id });
+    await broadcastScopeChange(req, 'sale:deleted', { _id: sale._id, workspaceId: sale.workspaceId });
 
     res.json({ 
       message: 'Sale deleted successfully',
@@ -441,21 +416,17 @@ export const deleteSale = async (req, res) => {
     });
   } catch (error) {
     console.error('Delete sale error:', error);
-    res.status(500).json({ error: error.message || 'Failed to delete sale' });
+    handleScopeError(res, error);
   }
 };
 
 export const deleteAllSales = async (req, res) => {
   try {
-    const userId = await getUserId(req);
-    if (!userId) {
-      return res.status(404).json({ error: 'User not found. Please login first.' });
-    }
-
-    // Find all sales first to restore stock
-    const allSales = await Sale.find({ userId });
+    assertPageAccess(req, 'sales');
+    const userId = getUserId(req);
+    const scopeQuery = buildListQuery(req);
+    const allSales = await Sale.find(scopeQuery);
     
-    // Group sales by productId and sum quantities to restore stock efficiently
     const stockRestorations = new Map();
     for (const sale of allSales) {
       if (sale.productId) {
@@ -465,21 +436,18 @@ export const deleteAllSales = async (req, res) => {
       }
     }
 
-    // Restore stock for each product
     for (const [productId, totalQuantity] of stockRestorations.entries()) {
       try {
-        const product = await Product.findOne({ _id: productId, userId });
+        const product = await Product.findOne(buildListQuery(req, { _id: productId }));
         if (product) {
           await restoreProductStock(product, totalQuantity);
         }
       } catch (error) {
         console.error(`Error restoring stock for product ${productId}:`, error);
-        // Continue with other products even if one fails
       }
     }
 
-    // Now delete all sales
-    const result = await Sale.deleteMany({ userId });
+    const result = await Sale.deleteMany(scopeQuery);
     
     res.json({ 
       message: `Successfully deleted ${result.deletedCount} sale(s)`,
@@ -487,6 +455,6 @@ export const deleteAllSales = async (req, res) => {
     });
   } catch (error) {
     console.error('Delete all sales error:', error);
-    res.status(500).json({ error: error.message || 'Failed to delete all sales' });
+    handleScopeError(res, error);
   }
 };

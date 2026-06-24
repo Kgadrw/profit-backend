@@ -1,56 +1,41 @@
-// Client Controller
 import Client from '../models/Client.js';
+import Invoice from '../models/Invoice.js';
+import Income from '../models/Income.js';
+import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
+import { handleScopeError } from '../utils/scopeErrors.js';
 
-// Get all clients for a user
 export const getClients = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access client data' });
-    }
-    const clients = await Client.find({ userId }).sort({ createdAt: -1 });
+    assertPageAccess(req, 'finance');
+    const clients = await Client.find(buildListQuery(req)).sort({ createdAt: -1 });
     res.json({ data: clients });
   } catch (error) {
     console.error('Error fetching clients:', error);
-    res.status(500).json({ error: 'Failed to fetch clients' });
+    handleScopeError(res, error);
   }
 };
 
-// Get a single client
 export const getClient = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access client data' });
-    }
-    const client = await Client.findOne({ _id: req.params.id, userId });
-    
+    assertPageAccess(req, 'finance');
+    const client = await Client.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
-    
     res.json({ data: client });
   } catch (error) {
     console.error('Error fetching client:', error);
-    res.status(500).json({ error: 'Failed to fetch client' });
+    handleScopeError(res, error);
   }
 };
 
-// Create a new client
 export const createClient = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot create clients' });
-    }
+    assertPageAccess(req, 'finance');
     const { name, email, phone, businessType, clientType, notes, workerStatus, discipline, lastCheckIn, lastCheckOut } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Client name is required' });
-    }
-
-    if (!businessType) {
-      return res.status(400).json({ error: 'Business type is required' });
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -61,14 +46,14 @@ export const createClient = async (req, res) => {
       name: name.trim(),
       email: email ? email.trim().toLowerCase() : undefined,
       phone: phone ? phone.trim() : undefined,
-      businessType: businessType.trim(),
+      businessType: businessType ? businessType.trim() : 'General',
       clientType: clientType || 'other',
       notes: notes ? notes.trim() : undefined,
       workerStatus: workerStatus || 'active',
       discipline: discipline || 'good',
       lastCheckIn: lastCheckIn ? new Date(lastCheckIn) : undefined,
       lastCheckOut: lastCheckOut ? new Date(lastCheckOut) : undefined,
-      userId,
+      ...buildCreateScope(req),
     });
 
     await client.save();
@@ -78,22 +63,17 @@ export const createClient = async (req, res) => {
     if (error.code === 11000) {
       res.status(400).json({ error: 'Client with this email already exists' });
     } else {
-      res.status(500).json({ error: 'Failed to create client' });
+      handleScopeError(res, error);
     }
   }
 };
 
-// Update a client
 export const updateClient = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot update clients' });
-    }
+    assertPageAccess(req, 'finance');
     const { name, email, phone, businessType, clientType, notes, workerStatus, discipline, lastCheckIn, lastCheckOut } = req.body;
 
-    const client = await Client.findOne({ _id: req.params.id, userId });
-    
+    const client = await Client.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
@@ -108,10 +88,7 @@ export const updateClient = async (req, res) => {
     }
     if (phone !== undefined) client.phone = phone ? phone.trim() : undefined;
     if (businessType !== undefined) {
-      if (!businessType || !businessType.trim()) {
-        return res.status(400).json({ error: 'Business type is required' });
-      }
-      client.businessType = businessType.trim();
+      client.businessType = businessType ? businessType.trim() : 'General';
     }
     if (clientType !== undefined) client.clientType = clientType;
     if (notes !== undefined) client.notes = notes ? notes.trim() : undefined;
@@ -128,26 +105,55 @@ export const updateClient = async (req, res) => {
     res.json({ data: client });
   } catch (error) {
     console.error('Error updating client:', error);
-    res.status(500).json({ error: 'Failed to update client' });
+    handleScopeError(res, error);
   }
 };
 
-// Delete a client
 export const deleteClient = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot delete clients' });
-    }
-    const client = await Client.findOneAndDelete({ _id: req.params.id, userId });
-    
+    assertPageAccess(req, 'finance');
+    const client = await Client.findOneAndDelete(buildListQuery(req, { _id: req.params.id }));
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
-    
     res.json({ message: 'Client deleted successfully' });
   } catch (error) {
     console.error('Error deleting client:', error);
-    res.status(500).json({ error: 'Failed to delete client' });
+    handleScopeError(res, error);
+  }
+};
+
+export const getClientActivity = async (req, res) => {
+  try {
+    assertPageAccess(req, 'finance');
+    const scope = buildListQuery(req);
+    const client = await Client.findOne({ ...scope, _id: req.params.id });
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    const [invoices, incomes] = await Promise.all([
+      Invoice.find({ ...scope, clientId: client._id }).sort({ issueDate: -1 }).lean(),
+      Income.find({ ...scope, clientId: client._id }).sort({ date: -1 }).lean(),
+    ]);
+
+    const outstanding = invoices
+      .filter((inv) => inv.status === 'sent' || inv.status === 'overdue')
+      .reduce((sum, inv) => sum + (Number(inv.amount) || 0), 0);
+
+    const totalPaid = incomes.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+
+    res.json({
+      data: {
+        client,
+        invoices,
+        incomes,
+        outstanding,
+        totalPaid,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching client activity:', error);
+    handleScopeError(res, error);
   }
 };

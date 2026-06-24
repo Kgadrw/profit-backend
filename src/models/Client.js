@@ -25,8 +25,8 @@ const clientSchema = new mongoose.Schema({
   },
   businessType: {
     type: String,
-    required: [true, 'Business type is required'],
     trim: true,
+    default: 'General',
   },
   clientType: {
     type: String,
@@ -57,6 +57,12 @@ const clientSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
+  },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    default: null,
+    index: true,
   },
 }, {
   timestamps: true,
