@@ -1,48 +1,28 @@
-import fs from 'fs';
 import path from 'path';
+import fs from 'fs';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import User from '../models/User.js';
 import WorkspaceMember from '../models/WorkspaceMember.js';
+import {
+  saveStoredFile,
+  getStoredFile,
+  deleteStoredFileByUrl,
+  deleteStoredFilesForUser,
+  sendStoredFile,
+} from '../utils/storedFileService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadsRoot = path.join(__dirname, '..', '..', 'uploads', 'receipts');
-const documentsRoot = path.join(__dirname, '..', '..', 'uploads', 'documents');
-const profilesRoot = path.join(__dirname, '..', '..', 'uploads', 'profiles');
+const legacyProfilesRoot = path.join(__dirname, '..', '..', 'uploads', 'profiles');
+const legacyReceiptsRoot = path.join(__dirname, '..', '..', 'uploads', 'receipts');
+const legacyDocumentsRoot = path.join(__dirname, '..', '..', 'uploads', 'documents');
 
-fs.mkdirSync(uploadsRoot, { recursive: true });
-fs.mkdirSync(documentsRoot, { recursive: true });
-fs.mkdirSync(profilesRoot, { recursive: true });
-
-function deleteStoredProfilePicture(userId, profilePictureUrl) {
-  if (!profilePictureUrl) return;
-  const match = profilePictureUrl.match(/\/files\/profile\/[^/]+\/([^/?#]+)/);
-  if (!match) return;
-  const safeName = path.basename(match[1]);
-  const filePath = path.join(profilesRoot, String(userId), safeName);
-  if (filePath.startsWith(path.join(profilesRoot, String(userId))) && fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
-  }
-}
-
-const storage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const userId = String(req.user?._id || 'unknown');
-    const userDir = path.join(uploadsRoot, userId);
-    fs.mkdirSync(userDir, { recursive: true });
-    cb(null, userDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
-    cb(null, unique);
-  },
-});
+const memoryStorage = multer.memoryStorage();
 
 const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf']);
 
 export const receiptUpload = multer({
-  storage,
+  storage: memoryStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
@@ -67,7 +47,14 @@ export const uploadReceipt = async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const receiptUrl = `/api/files/receipts/${userId}/${req.file.filename}`;
+    const { url: receiptUrl } = await saveStoredFile({
+      userId,
+      kind: 'receipt',
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+
     res.status(201).json({
       data: {
         receiptUrl,
@@ -79,6 +66,19 @@ export const uploadReceipt = async (req, res) => {
     res.status(500).json({ error: 'Failed to upload receipt' });
   }
 };
+
+function trySendLegacyFile(res, rootDir, userId, filename) {
+  const safeName = path.basename(filename);
+  const filePath = path.join(rootDir, String(userId), safeName);
+  if (!filePath.startsWith(path.join(rootDir, String(userId)))) {
+    return false;
+  }
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
+  res.sendFile(filePath);
+  return true;
+}
 
 export const getReceiptFile = async (req, res) => {
   try {
@@ -92,37 +92,21 @@ export const getReceiptFile = async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const safeName = path.basename(filename);
-    const filePath = path.join(uploadsRoot, String(userId), safeName);
-
-    if (!filePath.startsWith(path.join(uploadsRoot, String(userId)))) {
-      return res.status(400).json({ error: 'Invalid file path' });
+    const stored = await getStoredFile(userId, 'receipt', filename);
+    if (stored) {
+      return sendStoredFile(res, stored);
     }
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
+    if (trySendLegacyFile(res, legacyReceiptsRoot, userId, filename)) {
+      return;
     }
 
-    res.sendFile(filePath);
+    return res.status(404).json({ error: 'File not found' });
   } catch (error) {
     console.error('Error serving receipt file:', error);
     res.status(500).json({ error: 'Failed to load file' });
   }
 };
-
-const documentStorage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const userId = String(req.user?._id || 'unknown');
-    const userDir = path.join(documentsRoot, userId);
-    fs.mkdirSync(userDir, { recursive: true });
-    cb(null, userDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
-    cb(null, unique);
-  },
-});
 
 const documentExtensions = new Set([
   '.jpg',
@@ -142,7 +126,7 @@ const documentExtensions = new Set([
 ]);
 
 export const documentUpload = multer({
-  storage: documentStorage,
+  storage: memoryStorage,
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
@@ -165,12 +149,19 @@ export const uploadCompanyDocument = async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const fileUrl = `/api/files/documents/${userId}/${req.file.filename}`;
+    const { url: fileUrl, stored } = await saveStoredFile({
+      userId,
+      kind: 'document',
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+
     res.status(201).json({
       data: {
         fileUrl,
         fileName: req.file.originalname,
-        fileSize: req.file.size,
+        fileSize: stored.size,
       },
     });
   } catch (error) {
@@ -191,42 +182,26 @@ export const getCompanyDocumentFile = async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const safeName = path.basename(filename);
-    const filePath = path.join(documentsRoot, String(userId), safeName);
-
-    if (!filePath.startsWith(path.join(documentsRoot, String(userId)))) {
-      return res.status(400).json({ error: 'Invalid file path' });
+    const stored = await getStoredFile(userId, 'document', filename);
+    if (stored) {
+      return sendStoredFile(res, stored);
     }
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
+    if (trySendLegacyFile(res, legacyDocumentsRoot, userId, filename)) {
+      return;
     }
 
-    res.sendFile(filePath);
+    return res.status(404).json({ error: 'File not found' });
   } catch (error) {
     console.error('Error serving company document:', error);
     res.status(500).json({ error: 'Failed to load file' });
   }
 };
 
-const profileStorage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const userId = String(req.user?._id || 'unknown');
-    const userDir = path.join(profilesRoot, userId);
-    fs.mkdirSync(userDir, { recursive: true });
-    cb(null, userDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const unique = `avatar-${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
-    cb(null, unique);
-  },
-});
-
 const profileImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
 export const profileUpload = multer({
-  storage: profileStorage,
+  storage: memoryStorage,
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
@@ -255,9 +230,17 @@ export const uploadProfilePicture = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    deleteStoredProfilePicture(userId, user.profilePictureUrl);
+    await deleteStoredFileByUrl(user.profilePictureUrl);
+    await deleteStoredFilesForUser(userId, 'profile');
 
-    const profilePictureUrl = `/api/files/profile/${userId}/${req.file.filename}`;
+    const { url: profilePictureUrl } = await saveStoredFile({
+      userId,
+      kind: 'profile',
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+
     user.profilePictureUrl = profilePictureUrl;
     await user.save();
 
@@ -284,13 +267,14 @@ export const removeProfilePicture = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    deleteStoredProfilePicture(userId, user.profilePictureUrl);
+    await deleteStoredFileByUrl(user.profilePictureUrl);
+    await deleteStoredFilesForUser(userId, 'profile');
+    await User.findByIdAndUpdate(userId, { $unset: { profilePictureUrl: 1 } });
     user.profilePictureUrl = undefined;
-    await user.save();
 
     res.json({
       message: 'Profile picture removed',
-      user: user.toJSON(),
+      user: { ...user.toJSON(), profilePictureUrl: undefined },
     });
   } catch (error) {
     console.error('Error removing profile picture:', error);
@@ -320,18 +304,16 @@ export const getProfilePictureFile = async (req, res) => {
       }
     }
 
-    const safeName = path.basename(filename);
-    const filePath = path.join(profilesRoot, String(fileUserId), safeName);
-
-    if (!filePath.startsWith(path.join(profilesRoot, String(fileUserId)))) {
-      return res.status(400).json({ error: 'Invalid file path' });
+    const stored = await getStoredFile(fileUserId, 'profile', filename);
+    if (stored) {
+      return sendStoredFile(res, stored);
     }
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
+    if (trySendLegacyFile(res, legacyProfilesRoot, fileUserId, filename)) {
+      return;
     }
 
-    res.sendFile(filePath);
+    return res.status(404).json({ error: 'File not found' });
   } catch (error) {
     console.error('Error serving profile picture:', error);
     res.status(500).json({ error: 'Failed to load profile picture' });

@@ -1,6 +1,7 @@
 import CompanyDocument from '../models/CompanyDocument.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import { deleteStoredFileByUrl } from '../utils/storedFileService.js';
 
 const normalizeDocumentDate = (value) => {
   if (!value) return new Date();
@@ -119,6 +120,10 @@ export const deleteDocument = async (req, res) => {
     const document = await CompanyDocument.findOneAndDelete(buildListQuery(req, { _id: req.params.id }));
     if (!document) {
       return res.status(404).json({ error: 'Document not found' });
+    }
+
+    if (document.fileUrl) {
+      await deleteStoredFileByUrl(document.fileUrl);
     }
 
     res.json({ message: 'Document deleted' });
