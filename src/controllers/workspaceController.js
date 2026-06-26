@@ -70,6 +70,49 @@ export const listWorkspaces = async (req, res) => {
   }
 };
 
+export const updateWorkspace = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const { name } = req.body;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+
+    await assertWorkspaceAdmin(workspaceId, userId);
+
+    const trimmedName = String(name || '').trim();
+    if (!trimmedName) {
+      return res.status(400).json({ error: 'Workspace name is required' });
+    }
+
+    const workspace = await Workspace.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    workspace.name = trimmedName;
+    await workspace.save();
+
+    const membership = await getMembership(workspaceId, userId);
+
+    res.json({
+      message: 'Workspace updated',
+      workspace: {
+        id: workspace._id,
+        name: workspace.name,
+        role: membership?.role,
+        permissions: normalizePermissions(membership?.permissions, membership?.role),
+        isOwner: membership?.role === 'owner',
+      },
+    });
+  } catch (error) {
+    console.error('Update workspace error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to update workspace' });
+  }
+};
+
 export const createWorkspace = async (req, res) => {
   try {
     const { name } = req.body;

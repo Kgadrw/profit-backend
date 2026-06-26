@@ -2,6 +2,7 @@ import express from 'express';
 import {
   listWorkspaces,
   createWorkspace,
+  updateWorkspace,
   getWorkspaceMembers,
   inviteToWorkspace,
   previewWorkspaceInvite,
@@ -23,6 +24,7 @@ router.use(rateLimiters.general);
 
 router.get('/', listWorkspaces);
 router.post('/', createWorkspace);
+router.patch('/:workspaceId', updateWorkspace);
 router.get('/:workspaceId/members', getWorkspaceMembers);
 router.get('/:workspaceId/invite-search', searchInviteUsers);
 router.post('/:workspaceId/invites', inviteToWorkspace);
