@@ -1,6 +1,13 @@
 import Payroll from '../models/Payroll.js';
+import TeamMember from '../models/TeamMember.js';
+import mongoose from 'mongoose';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import {
+  buildSubmissionFields,
+  getInitialApprovalStatus,
+  isWorkspaceApprovalEnabled,
+} from '../utils/approvalWorkflow.js';
 
 const normalizePayrollDate = (value) => {
   if (!value) return new Date();
@@ -12,6 +19,23 @@ const normalizePayrollDate = (value) => {
   }
   return new Date(value);
 };
+
+async function resolvePayrollEmployee(req, { teamMemberId, employeeName }) {
+  if (teamMemberId && mongoose.Types.ObjectId.isValid(teamMemberId)) {
+    const member = await TeamMember.findOne(buildListQuery(req, { _id: teamMemberId }));
+    if (member) {
+      return {
+        teamMemberId: member._id,
+        employeeName: member.name,
+      };
+    }
+  }
+
+  return {
+    teamMemberId: null,
+    employeeName: employeeName?.trim(),
+  };
+}
 
 export const getPayrolls = async (req, res) => {
   try {
@@ -64,6 +88,7 @@ export const createPayroll = async (req, res) => {
 
     const {
       employeeName,
+      teamMemberId,
       amount,
       period,
       paymentDate,
@@ -77,8 +102,12 @@ export const createPayroll = async (req, res) => {
       accountId,
     } = req.body;
 
+    const approvalStatus = getInitialApprovalStatus(req);
+    const resolvedEmployee = await resolvePayrollEmployee(req, { teamMemberId, employeeName });
+
     const payroll = new Payroll({
-      employeeName: employeeName?.trim(),
+      employeeName: resolvedEmployee.employeeName,
+      teamMemberId: resolvedEmployee.teamMemberId,
       amount: Number(amount),
       period: period?.trim(),
       paymentDate: normalizePayrollDate(paymentDate),
@@ -90,6 +119,8 @@ export const createPayroll = async (req, res) => {
       accountId: accountId || undefined,
       receiptUrl: receiptUrl || undefined,
       receiptFileName: receiptFileName || undefined,
+      approvalStatus,
+      ...buildSubmissionFields(req, approvalStatus),
       ...buildCreateScope(req),
     });
 
@@ -112,8 +143,13 @@ export const updatePayroll = async (req, res) => {
       return res.status(404).json({ error: 'Payroll not found' });
     }
 
+    if (isWorkspaceApprovalEnabled(req) && payroll.approvalStatus === 'pending_approval') {
+      return res.status(400).json({ error: 'Pending payroll records cannot be edited. Wait for approval or delete and recreate.' });
+    }
+
     const {
       employeeName,
+      teamMemberId,
       amount,
       period,
       paymentDate,
@@ -127,7 +163,14 @@ export const updatePayroll = async (req, res) => {
       accountId,
     } = req.body;
 
-    if (employeeName !== undefined) payroll.employeeName = employeeName?.trim();
+    if (employeeName !== undefined || teamMemberId !== undefined) {
+      const resolvedEmployee = await resolvePayrollEmployee(req, {
+        teamMemberId: teamMemberId ?? payroll.teamMemberId,
+        employeeName: employeeName ?? payroll.employeeName,
+      });
+      payroll.employeeName = resolvedEmployee.employeeName;
+      payroll.teamMemberId = resolvedEmployee.teamMemberId;
+    }
     if (amount !== undefined) payroll.amount = Number(amount);
     if (period !== undefined) payroll.period = period?.trim();
     if (paymentDate !== undefined) payroll.paymentDate = normalizePayrollDate(paymentDate);
@@ -139,6 +182,11 @@ export const updatePayroll = async (req, res) => {
     if (accountId !== undefined) payroll.accountId = accountId || undefined;
     if (receiptUrl !== undefined) payroll.receiptUrl = receiptUrl || undefined;
     if (receiptFileName !== undefined) payroll.receiptFileName = receiptFileName || undefined;
+
+    if (isWorkspaceApprovalEnabled(req) && payroll.approvalStatus === 'rejected') {
+      payroll.approvalStatus = 'pending_approval';
+      Object.assign(payroll, buildSubmissionFields(req, 'pending_approval'));
+    }
 
     await payroll.save();
     res.json({ data: payroll });

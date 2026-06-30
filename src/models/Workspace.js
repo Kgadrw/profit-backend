@@ -7,6 +7,11 @@ const workspaceSchema = new mongoose.Schema({
     trim: true,
     maxlength: 120,
   },
+  profilePictureUrl: {
+    type: String,
+    trim: true,
+    maxlength: 500,
+  },
   ownerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

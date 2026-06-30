@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { approvalFieldDefinitions } from '../utils/approvalFields.js';
 
 const payrollSchema = new mongoose.Schema(
   {
@@ -7,6 +8,12 @@ const payrollSchema = new mongoose.Schema(
       required: [true, 'Employee name is required'],
       trim: true,
       maxlength: [200],
+    },
+    teamMemberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TeamMember',
+      default: null,
+      index: true,
     },
     amount: {
       type: Number,
@@ -64,6 +71,7 @@ const payrollSchema = new mongoose.Schema(
       trim: true,
       maxlength: [255],
     },
+    ...approvalFieldDefinitions,
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

@@ -70,6 +70,8 @@ export const createCalendarEvent = async (req, res) => {
       color,
       status,
       reminderMinutes,
+      clientId,
+      clientName,
     } = req.body;
 
     if (!title?.trim()) {
@@ -90,6 +92,8 @@ export const createCalendarEvent = async (req, res) => {
       color: color?.trim() || '',
       status: status || 'scheduled',
       reminderMinutes: Number(reminderMinutes) || 0,
+      clientId: clientId || undefined,
+      clientName: clientName?.trim() || '',
       ...buildCreateScope(req),
     });
 
@@ -119,6 +123,8 @@ export const updateCalendarEvent = async (req, res) => {
       'color',
       'status',
       'reminderMinutes',
+      'clientId',
+      'clientName',
     ];
 
     for (const field of fields) {

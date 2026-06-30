@@ -8,6 +8,7 @@ import { rateLimiters } from './rateLimiter.js';
 export const apiLimiter = rateLimiters.general;
 export const authLimiter = rateLimiters.auth;
 export const adminLimiter = rateLimiters.admin;
+export { rateLimiters };
 
 // Security headers middleware
 export const securityHeaders = helmet({

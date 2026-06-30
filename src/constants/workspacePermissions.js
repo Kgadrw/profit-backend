@@ -3,17 +3,22 @@ export const WORKSPACE_PAGES = [
   { key: 'dashboard', label: 'Overview', path: '/dashboard' },
   { key: 'products', label: 'Products', path: '/products' },
   { key: 'sales', label: 'Sales', path: '/sales' },
-  { key: 'schedules', label: 'Automations', path: '/schedules' },
+  { key: 'schedules', label: 'Automations', path: '/calendar/schedules' },
   { key: 'calendar', label: 'Calendar', path: '/calendar' },
   { key: 'team', label: 'Team', path: '/team' },
+  { key: 'projects', label: 'Projects', path: '/projects' },
+  { key: 'crm', label: 'CRM', path: '/crm' },
   { key: 'finance', label: 'Finance', path: '/finance/income' },
   { key: 'reports', label: 'Reports', path: '/reports' },
   { key: 'documents', label: 'Documents', path: '/documents' },
+  { key: 'assets', label: 'Assets', path: '/assets' },
+  { key: 'approvals', label: 'Approvals', path: '/approvals' },
+  { key: 'chat', label: 'Messages', path: '/messages' },
 ];
 
 export const ALL_WORKSPACE_PAGE_KEYS = WORKSPACE_PAGES.map((p) => p.key);
 
-export const DEFAULT_MEMBER_PERMISSIONS = ['dashboard', 'products', 'sales'];
+export const DEFAULT_MEMBER_PERMISSIONS = ['dashboard', 'products', 'sales', 'chat'];
 
 export function normalizePermissions(permissions, role) {
   if (role === 'owner' || role === 'admin') {

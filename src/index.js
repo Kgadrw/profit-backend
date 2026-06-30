@@ -11,6 +11,7 @@ import { paypackWebhook } from './controllers/subscriptionController.js';
 import { logPaypackStartupWarnings } from './utils/paypack.js';
 import { startScheduler } from './utils/scheduler.js';
 import { initializeWebSocket } from './utils/websocket.js';
+import { migrateLegacyUploadsToDatabase } from './utils/migrateLegacyUploadsToDatabase.js';
 import ServerStatus from './models/ServerStatus.js';
 
 const app = express();
@@ -44,6 +45,17 @@ app.set('trust proxy', 1);
 
 // Connect to MongoDB
 connectDatabase().then(async () => {
+  try {
+    const migration = await migrateLegacyUploadsToDatabase();
+    if (migration.migrated > 0 || migration.urlsUpdated > 0) {
+      console.log(
+        `✅ Legacy uploads migrated to database: ${migration.migrated} file(s) imported, ${migration.urlsUpdated} URL(s) updated`,
+      );
+    }
+  } catch (error) {
+    console.error('Legacy upload migration failed (non-critical):', error.message);
+  }
+
   // Log server startup (with delay to ensure DB is ready)
   setTimeout(async () => {
     await logServerStatus('up');

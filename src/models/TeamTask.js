@@ -30,7 +30,8 @@ const teamTaskSchema = new mongoose.Schema(
     },
     department: {
       type: String,
-      enum: ['general', 'finance', 'operations', 'sales', 'marketing', 'hr'],
+      trim: true,
+      lowercase: true,
       default: 'general',
       index: true,
     },

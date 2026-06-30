@@ -1,22 +1,25 @@
 import path from 'path';
-import fs from 'fs';
 import multer from 'multer';
-import { fileURLToPath } from 'url';
 import User from '../models/User.js';
 import WorkspaceMember from '../models/WorkspaceMember.js';
 import {
   saveStoredFile,
   getStoredFile,
   deleteStoredFileByUrl,
-  deleteStoredFilesForUser,
+  deleteStoredFilesForOwner,
   sendStoredFile,
+  getStoredChatAttachment,
 } from '../utils/storedFileService.js';
+import Workspace from '../models/Workspace.js';
+import WorkspaceDirectConversation from '../models/WorkspaceDirectConversation.js';
+import { parseStoredFileUrl } from '../utils/storedFileService.js';
+import {
+  buildFileResourceKey,
+  createFileAccessToken,
+  verifyFileAccessToken,
+} from '../utils/fileAccessToken.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const legacyProfilesRoot = path.join(__dirname, '..', '..', 'uploads', 'profiles');
-const legacyReceiptsRoot = path.join(__dirname, '..', '..', 'uploads', 'receipts');
-const legacyDocumentsRoot = path.join(__dirname, '..', '..', 'uploads', 'documents');
-
+/** All uploads are buffered in memory and persisted in MongoDB (StoredFile collection). */
 const memoryStorage = multer.memoryStorage();
 
 const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf']);
@@ -67,19 +70,6 @@ export const uploadReceipt = async (req, res) => {
   }
 };
 
-function trySendLegacyFile(res, rootDir, userId, filename) {
-  const safeName = path.basename(filename);
-  const filePath = path.join(rootDir, String(userId), safeName);
-  if (!filePath.startsWith(path.join(rootDir, String(userId)))) {
-    return false;
-  }
-  if (!fs.existsSync(filePath)) {
-    return false;
-  }
-  res.sendFile(filePath);
-  return true;
-}
-
 export const getReceiptFile = async (req, res) => {
   try {
     const userId = req.user._id === 'admin' ? null : req.user._id;
@@ -93,15 +83,11 @@ export const getReceiptFile = async (req, res) => {
     }
 
     const stored = await getStoredFile(userId, 'receipt', filename);
-    if (stored) {
-      return sendStoredFile(res, stored);
+    if (!stored) {
+      return res.status(404).json({ error: 'File not found' });
     }
 
-    if (trySendLegacyFile(res, legacyReceiptsRoot, userId, filename)) {
-      return;
-    }
-
-    return res.status(404).json({ error: 'File not found' });
+    return sendStoredFile(res, stored);
   } catch (error) {
     console.error('Error serving receipt file:', error);
     res.status(500).json({ error: 'Failed to load file' });
@@ -183,15 +169,11 @@ export const getCompanyDocumentFile = async (req, res) => {
     }
 
     const stored = await getStoredFile(userId, 'document', filename);
-    if (stored) {
-      return sendStoredFile(res, stored);
+    if (!stored) {
+      return res.status(404).json({ error: 'File not found' });
     }
 
-    if (trySendLegacyFile(res, legacyDocumentsRoot, userId, filename)) {
-      return;
-    }
-
-    return res.status(404).json({ error: 'File not found' });
+    return sendStoredFile(res, stored);
   } catch (error) {
     console.error('Error serving company document:', error);
     res.status(500).json({ error: 'Failed to load file' });
@@ -231,7 +213,7 @@ export const uploadProfilePicture = async (req, res) => {
     }
 
     await deleteStoredFileByUrl(user.profilePictureUrl);
-    await deleteStoredFilesForUser(userId, 'profile');
+    await deleteStoredFilesForOwner(userId, 'profile');
 
     const { url: profilePictureUrl } = await saveStoredFile({
       userId,
@@ -268,7 +250,7 @@ export const removeProfilePicture = async (req, res) => {
     }
 
     await deleteStoredFileByUrl(user.profilePictureUrl);
-    await deleteStoredFilesForUser(userId, 'profile');
+    await deleteStoredFilesForOwner(userId, 'profile');
     await User.findByIdAndUpdate(userId, { $unset: { profilePictureUrl: 1 } });
     user.profilePictureUrl = undefined;
 
@@ -284,12 +266,23 @@ export const removeProfilePicture = async (req, res) => {
 
 export const getProfilePictureFile = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access profile pictures' });
+    const { userId: fileUserId, filename } = req.params;
+    const safeFilename = path.basename(filename);
+    const resourceKey = buildFileResourceKey('profile', [String(fileUserId), safeFilename]);
+
+    let userId = null;
+    if (req.fileAccessToken) {
+      userId = verifyFileAccessToken(req.fileAccessToken, resourceKey);
+      if (!userId || userId === 'admin') {
+        return res.status(403).json({ error: 'Invalid or expired access token' });
+      }
+    } else {
+      userId = req.user._id === 'admin' ? null : req.user._id;
+      if (!userId) {
+        return res.status(403).json({ error: 'Admin cannot access profile pictures' });
+      }
     }
 
-    const { userId: fileUserId, filename } = req.params;
     if (String(fileUserId) !== String(userId)) {
       const viewerMemberships = await WorkspaceMember.find({ userId }).select('workspaceId').lean();
       const sharedWorkspaceIds = viewerMemberships.map((m) => m.workspaceId);
@@ -304,18 +297,331 @@ export const getProfilePictureFile = async (req, res) => {
       }
     }
 
-    const stored = await getStoredFile(fileUserId, 'profile', filename);
-    if (stored) {
-      return sendStoredFile(res, stored);
+    const stored = await getStoredFile(fileUserId, 'profile', safeFilename);
+    if (!stored) {
+      return res.status(404).json({ error: 'File not found' });
     }
 
-    if (trySendLegacyFile(res, legacyProfilesRoot, fileUserId, filename)) {
-      return;
-    }
-
-    return res.status(404).json({ error: 'File not found' });
+    res.set('Cache-Control', 'private, max-age=3600');
+    return sendStoredFile(res, stored);
   } catch (error) {
     console.error('Error serving profile picture:', error);
     res.status(500).json({ error: 'Failed to load profile picture' });
+  }
+};
+
+async function assertWorkspaceAdmin(workspaceId, userId) {
+  const membership = await WorkspaceMember.findOne({ workspaceId, userId });
+  if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
+    const error = new Error('Workspace admin access required');
+    error.statusCode = 403;
+    throw error;
+  }
+  return membership;
+}
+
+export const uploadWorkspaceProfilePicture = async (req, res) => {
+  try {
+    const userId = req.user._id === 'admin' ? null : req.user._id;
+    if (!userId) {
+      return res.status(403).json({ error: 'Admin cannot upload a workspace profile picture' });
+    }
+
+    const { workspaceId } = req.params;
+    if (!workspaceId) {
+      return res.status(400).json({ error: 'Workspace id is required' });
+    }
+
+    await assertWorkspaceAdmin(workspaceId, userId);
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const workspace = await Workspace.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    await deleteStoredFileByUrl(workspace.profilePictureUrl);
+    await deleteStoredFilesForOwner(workspaceId, 'workspace-profile');
+
+    const { url: profilePictureUrl } = await saveStoredFile({
+      userId: workspaceId,
+      kind: 'workspace-profile',
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+
+    workspace.profilePictureUrl = profilePictureUrl;
+    await workspace.save();
+
+    res.status(201).json({
+      message: 'Workspace profile picture updated',
+      data: { profilePictureUrl },
+      workspace: {
+        id: workspace._id,
+        name: workspace.name,
+        profilePictureUrl: workspace.profilePictureUrl,
+      },
+    });
+  } catch (error) {
+    console.error('Error uploading workspace profile picture:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to upload workspace profile picture',
+    });
+  }
+};
+
+export const removeWorkspaceProfilePicture = async (req, res) => {
+  try {
+    const userId = req.user._id === 'admin' ? null : req.user._id;
+    if (!userId) {
+      return res.status(403).json({ error: 'Admin cannot remove a workspace profile picture' });
+    }
+
+    const { workspaceId } = req.params;
+    if (!workspaceId) {
+      return res.status(400).json({ error: 'Workspace id is required' });
+    }
+
+    await assertWorkspaceAdmin(workspaceId, userId);
+
+    const workspace = await Workspace.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    await deleteStoredFileByUrl(workspace.profilePictureUrl);
+    await deleteStoredFilesForOwner(workspaceId, 'workspace-profile');
+    workspace.profilePictureUrl = undefined;
+    await workspace.save();
+
+    res.json({
+      message: 'Workspace profile picture removed',
+      workspace: {
+        id: workspace._id,
+        name: workspace.name,
+        profilePictureUrl: null,
+      },
+    });
+  } catch (error) {
+    console.error('Error removing workspace profile picture:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to remove workspace profile picture',
+    });
+  }
+};
+
+export const getWorkspaceProfilePictureFile = async (req, res) => {
+  try {
+    const { workspaceId, filename } = req.params;
+    const safeFilename = path.basename(filename);
+    const resourceKey = buildFileResourceKey('workspace-profile', [
+      String(workspaceId),
+      safeFilename,
+    ]);
+
+    let userId = null;
+    if (req.fileAccessToken) {
+      userId = verifyFileAccessToken(req.fileAccessToken, resourceKey);
+      if (!userId || userId === 'admin') {
+        return res.status(403).json({ error: 'Invalid or expired access token' });
+      }
+    } else {
+      userId = req.user._id === 'admin' ? null : req.user._id;
+      if (!userId) {
+        return res.status(403).json({ error: 'Admin cannot access workspace profile pictures' });
+      }
+    }
+
+    const membership = await WorkspaceMember.findOne({ workspaceId, userId });
+    if (!membership) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const stored = await getStoredFile(workspaceId, 'workspace-profile', safeFilename);
+    if (!stored) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    res.set('Cache-Control', 'private, max-age=3600');
+    return sendStoredFile(res, stored);
+  } catch (error) {
+    console.error('Error serving workspace profile picture:', error);
+    res.status(500).json({ error: 'Failed to load workspace profile picture' });
+  }
+};
+
+const chatAttachmentExtensions = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.gif',
+  '.webp',
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.ppt',
+  '.pptx',
+  '.txt',
+  '.csv',
+]);
+
+export const chatAttachmentUpload = multer({
+  storage: memoryStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (chatAttachmentExtensions.has(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('File type not allowed. Use images or documents.'));
+    }
+  },
+});
+
+export const getChatAttachmentFile = async (req, res) => {
+  try {
+    const { workspaceId, conversationId, filename } = req.params;
+    const resourceKey = buildFileResourceKey('chat-attachment', [
+      String(workspaceId),
+      String(conversationId),
+      path.basename(filename),
+    ]);
+
+    let userId = null;
+
+    if (req.fileAccessToken) {
+      userId = verifyFileAccessToken(req.fileAccessToken, resourceKey);
+      if (!userId || userId === 'admin') {
+        return res.status(403).json({ error: 'Invalid or expired access token' });
+      }
+    } else {
+      userId = req.user._id === 'admin' ? null : req.user._id;
+      if (!userId) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
+    const membership = await WorkspaceMember.findOne({ workspaceId, userId });
+    if (!membership) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const conversation = await WorkspaceDirectConversation.findOne({ _id: conversationId, workspaceId }).lean();
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const isParticipant = (conversation.participantIds || []).some(
+      (participantId) => String(participantId) === String(userId),
+    );
+    if (!isParticipant) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const stored = await getStoredChatAttachment(workspaceId, conversationId, filename);
+    if (!stored) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    res.set('Cache-Control', 'private, max-age=3600');
+    return sendStoredFile(res, stored);
+  } catch (error) {
+    console.error('Error serving chat attachment:', error);
+    res.status(500).json({ error: 'Failed to load attachment' });
+  }
+};
+
+export const issueFileAccessToken = async (req, res) => {
+  try {
+    const userId = req.user._id === 'admin' ? null : req.user._id;
+    if (!userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { url } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'url is required' });
+    }
+
+    const parsed = parseStoredFileUrl(url.trim());
+    if (!parsed) {
+      return res.status(400).json({ error: 'Invalid file url' });
+    }
+
+    if (parsed.kind === 'chat-attachment') {
+      const { workspaceId, conversationId, filename } = parsed;
+      const membership = await WorkspaceMember.findOne({ workspaceId, userId });
+      if (!membership) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      const conversation = await WorkspaceDirectConversation.findOne({
+        _id: conversationId,
+        workspaceId,
+      }).lean();
+      if (!conversation) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+
+      const isParticipant = (conversation.participantIds || []).some(
+        (participantId) => String(participantId) === String(userId),
+      );
+      if (!isParticipant) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      const resourceKey = buildFileResourceKey('chat-attachment', [
+        String(workspaceId),
+        String(conversationId),
+        filename,
+      ]);
+      const issued = createFileAccessToken(userId, resourceKey);
+      return res.json({ data: issued });
+    }
+
+    if (parsed.kind === 'profile') {
+      if (String(parsed.userId) !== String(userId)) {
+        const viewerMemberships = await WorkspaceMember.find({ userId }).select('workspaceId').lean();
+        const sharedWorkspaceIds = viewerMemberships.map((m) => m.workspaceId);
+        const coMember = sharedWorkspaceIds.length
+          ? await WorkspaceMember.findOne({
+              userId: parsed.userId,
+              workspaceId: { $in: sharedWorkspaceIds },
+            })
+          : null;
+        if (!coMember) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+
+      const resourceKey = buildFileResourceKey('profile', [String(parsed.userId), parsed.filename]);
+      const issued = createFileAccessToken(userId, resourceKey);
+      return res.json({ data: issued });
+    }
+
+    if (parsed.kind === 'workspace-profile') {
+      const membership = await WorkspaceMember.findOne({ workspaceId: parsed.userId, userId });
+      if (!membership) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      const resourceKey = buildFileResourceKey('workspace-profile', [
+        String(parsed.userId),
+        parsed.filename,
+      ]);
+      const issued = createFileAccessToken(userId, resourceKey);
+      return res.json({ data: issued });
+    }
+
+    return res.status(400).json({ error: 'Unsupported file type for access token' });
+  } catch (error) {
+    console.error('Error issuing file access token:', error);
+    res.status(500).json({ error: 'Failed to issue access token' });
   }
 };

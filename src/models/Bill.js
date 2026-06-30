@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { approvalFieldDefinitions } from '../utils/approvalFields.js';
 
 const billSchema = new mongoose.Schema(
   {
@@ -76,6 +77,7 @@ const billSchema = new mongoose.Schema(
       trim: true,
       maxlength: [255],
     },
+    ...approvalFieldDefinitions,
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

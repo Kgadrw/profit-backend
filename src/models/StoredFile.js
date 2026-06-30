@@ -10,7 +10,7 @@ const storedFileSchema = new mongoose.Schema(
     },
     kind: {
       type: String,
-      enum: ['profile', 'receipt', 'document'],
+      enum: ['profile', 'receipt', 'document', 'workspace-profile', 'chat-attachment'],
       required: true,
     },
     filename: {
@@ -39,6 +39,17 @@ const storedFileSchema = new mongoose.Schema(
       type: Number,
       required: true,
       min: 0,
+    },
+    workspaceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Workspace',
+      default: null,
+      index: true,
+    },
+    conversationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+      index: true,
     },
   },
   {

@@ -1,12 +1,18 @@
 import Bill from '../models/Bill.js';
 import Expense from '../models/Expense.js';
 import Vendor from '../models/Vendor.js';
-import { buildListQuery, assertPageAccess } from '../utils/dataScope.js';
+import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import {
+  assertRecordApproved,
+  buildSubmissionFields,
+  getInitialApprovalStatus,
+  isWorkspaceApprovalEnabled,
+} from '../utils/approvalWorkflow.js';
 
-const resolveVendorFields = async (userId, vendorId, vendorText) => {
+const resolveVendorFields = async (req, vendorId, vendorText) => {
   if (vendorId) {
-    const vendor = await Vendor.findOne({ _id: vendorId, userId });
+    const vendor = await Vendor.findOne(buildListQuery(req, { _id: vendorId }));
     if (vendor) {
       return { vendorId: vendor._id, vendor: vendor.name };
     }
@@ -62,12 +68,8 @@ export const getBills = async (req, res) => {
 
 export const getBill = async (req, res) => {
   try {
-    const userId = req.user._id === 'admin' ? null : req.user._id;
-    if (!userId) {
-      return res.status(403).json({ error: 'Admin cannot access bill data' });
-    }
-
-    const bill = await Bill.findOne({ _id: req.params.id, userId });
+    assertPageAccess(req, 'finance');
+    const bill = await Bill.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
     }
@@ -75,12 +77,13 @@ export const getBill = async (req, res) => {
     res.json({ data: bill });
   } catch (error) {
     console.error('Error fetching bill:', error);
-    res.status(500).json({ error: 'Failed to fetch bill' });
+    handleScopeError(res, error);
   }
 };
 
 export const createBill = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot create bills' });
@@ -101,7 +104,8 @@ export const createBill = async (req, res) => {
       receiptFileName,
     } = req.body;
 
-    const vendorFields = await resolveVendorFields(userId, vendorId, vendor);
+    const vendorFields = await resolveVendorFields(req, vendorId, vendor);
+    const approvalStatus = getInitialApprovalStatus(req);
 
     const bill = new Bill({
       title: title?.trim(),
@@ -117,7 +121,9 @@ export const createBill = async (req, res) => {
       bankAccountNumber: bankAccountNumber ? bankAccountNumber.trim() : undefined,
       receiptUrl: receiptUrl || undefined,
       receiptFileName: receiptFileName || undefined,
-      userId,
+      approvalStatus,
+      ...buildSubmissionFields(req, approvalStatus),
+      ...buildCreateScope(req),
     });
 
     await bill.save();
@@ -127,24 +133,29 @@ export const createBill = async (req, res) => {
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: 'Failed to create bill' });
+    handleScopeError(res, error);
   }
 };
 
 export const updateBill = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot update bills' });
     }
 
-    const bill = await Bill.findOne({ _id: req.params.id, userId });
+    const bill = await Bill.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
     if (bill.status === 'paid') {
       return res.status(400).json({ error: 'Paid bills cannot be edited' });
+    }
+
+    if (isWorkspaceApprovalEnabled(req) && bill.approvalStatus === 'pending_approval') {
+      return res.status(400).json({ error: 'Pending bills cannot be edited. Wait for approval or delete and recreate.' });
     }
 
     const {
@@ -166,7 +177,7 @@ export const updateBill = async (req, res) => {
     if (amount !== undefined) bill.amount = Number(amount);
     if (vendor !== undefined || vendorId !== undefined) {
       const vendorFields = await resolveVendorFields(
-        userId,
+        req,
         vendorId !== undefined ? vendorId : bill.vendorId,
         vendor !== undefined ? vendor : bill.vendor,
       );
@@ -182,6 +193,11 @@ export const updateBill = async (req, res) => {
     if (receiptUrl !== undefined) bill.receiptUrl = receiptUrl || undefined;
     if (receiptFileName !== undefined) bill.receiptFileName = receiptFileName || undefined;
 
+    if (isWorkspaceApprovalEnabled(req) && bill.approvalStatus === 'rejected') {
+      bill.approvalStatus = 'pending_approval';
+      Object.assign(bill, buildSubmissionFields(req, 'pending_approval'));
+    }
+
     await bill.save();
     res.json({ data: bill });
   } catch (error) {
@@ -189,24 +205,31 @@ export const updateBill = async (req, res) => {
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: 'Failed to update bill' });
+    handleScopeError(res, error);
   }
 };
 
 export const markBillPaid = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot update bills' });
     }
 
-    const bill = await Bill.findOne({ _id: req.params.id, userId });
+    const bill = await Bill.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
     if (bill.status === 'paid') {
       return res.status(400).json({ error: 'Bill is already paid' });
+    }
+
+    try {
+      assertRecordApproved(bill, 'mark this bill as paid');
+    } catch (approvalError) {
+      return res.status(approvalError.statusCode || 400).json({ error: approvalError.message });
     }
 
     const { paymentMethod, paymentDate, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, accountId } = req.body;
@@ -236,7 +259,8 @@ export const markBillPaid = async (req, res) => {
       receiptUrl: receiptUrl || bill.receiptUrl || undefined,
       receiptFileName: receiptFileName || bill.receiptFileName || undefined,
       accountId: accountId || undefined,
-      userId,
+      approvalStatus: 'approved',
+      ...buildCreateScope(req),
     });
 
     await expense.save();
@@ -258,25 +282,32 @@ export const markBillPaid = async (req, res) => {
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: 'Failed to mark bill as paid' });
+    handleScopeError(res, error);
   }
 };
 
 export const deleteBill = async (req, res) => {
   try {
+    assertPageAccess(req, 'finance');
     const userId = req.user._id === 'admin' ? null : req.user._id;
     if (!userId) {
       return res.status(403).json({ error: 'Admin cannot delete bills' });
     }
 
-    const bill = await Bill.findOneAndDelete({ _id: req.params.id, userId, status: 'pending' });
+    const bill = await Bill.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!bill) {
-      return res.status(404).json({ error: 'Bill not found or already paid' });
+      return res.status(404).json({ error: 'Bill not found' });
     }
 
-    res.json({ message: 'Bill deleted successfully', data: bill });
+    if (bill.status === 'paid') {
+      return res.status(400).json({ error: 'Paid bills cannot be deleted' });
+    }
+
+    await Bill.deleteOne({ _id: bill._id });
+
+    res.json({ message: 'Bill deleted' });
   } catch (error) {
     console.error('Error deleting bill:', error);
-    res.status(500).json({ error: 'Failed to delete bill' });
+    handleScopeError(res, error);
   }
 };

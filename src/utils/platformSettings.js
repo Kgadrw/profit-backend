@@ -95,14 +95,8 @@ export async function tryAdminLogin(email, pin) {
   return verifyAdminPin(pin);
 }
 
-export async function updatePlatformSettings(updates, currentPin) {
+export async function updatePlatformSettings(updates) {
   const doc = await getPlatformSettingsDocument();
-  const pinOk = await doc.comparePin(String(currentPin || ''));
-  if (!pinOk) {
-    const error = new Error('Current PIN is incorrect');
-    error.statusCode = 401;
-    throw error;
-  }
 
   if (updates.adminEmail !== undefined) {
     const nextEmail = String(updates.adminEmail).trim().toLowerCase();
@@ -112,22 +106,6 @@ export async function updatePlatformSettings(updates, currentPin) {
       throw error;
     }
     doc.adminEmail = nextEmail;
-  }
-
-  if (updates.newPin) {
-    const newPin = String(updates.newPin);
-    const confirmPin = String(updates.confirmNewPin || '');
-    if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
-      const error = new Error('New PIN must be exactly 4 digits');
-      error.statusCode = 400;
-      throw error;
-    }
-    if (newPin !== confirmPin) {
-      const error = new Error('New PIN and confirmation do not match');
-      error.statusCode = 400;
-      throw error;
-    }
-    doc.adminPinHash = await bcrypt.hash(newPin, 10);
   }
 
   if (updates.subscriptionAmount !== undefined) {

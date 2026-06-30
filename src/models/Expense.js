@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { approvalFieldDefinitions } from '../utils/approvalFields.js';
 
 const expenseSchema = new mongoose.Schema(
   {
@@ -71,6 +72,7 @@ const expenseSchema = new mongoose.Schema(
     reconciledAt: {
       type: Date,
     },
+    ...approvalFieldDefinitions,
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

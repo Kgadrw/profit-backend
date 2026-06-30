@@ -21,6 +21,8 @@ import vendorRoutes from './vendorRoutes.js';
 import accountRoutes from './accountRoutes.js';
 import categoryBudgetRoutes from './categoryBudgetRoutes.js';
 import documentRoutes from './documentRoutes.js';
+import assetRoutes from './assetRoutes.js';
+import approvalRoutes from './approvalRoutes.js';
 import {
   receiptUpload,
   uploadReceipt,
@@ -32,19 +34,29 @@ import {
   uploadProfilePicture,
   removeProfilePicture,
   getProfilePictureFile,
+  getWorkspaceProfilePictureFile,
+  getChatAttachmentFile,
+  issueFileAccessToken,
 } from '../controllers/uploadController.js';
 import { authenticateUser } from '../middleware/auth.js';
+import { authenticateFileAccess } from '../middleware/fileAccessAuth.js';
 import { requirePlusAccess } from '../middleware/requirePlusAccess.js';
-import { apiLimiter } from '../middleware/security.js';
+import { apiLimiter, rateLimiters } from '../middleware/security.js';
 import recurringExpenseRoutes from './recurringExpenseRoutes.js';
 import calendarEventRoutes from './calendarEventRoutes.js';
 import teamMemberRoutes from './teamMemberRoutes.js';
 import teamTaskRoutes from './teamTaskRoutes.js';
+import projectRoutes from './projectRoutes.js';
+import crmRoutes from './crmRoutes.js';
+import leaveRequestRoutes from './leaveRequestRoutes.js';
 import inventoryRoutes from './inventoryRoutes.js';
 import subscriptionRoutes from './subscriptionRoutes.js';
 import bookingRoutes from './bookingRoutes.js';
 import contentRoutes from './contentRoutes.js';
 import workspaceRoutes from './workspaceRoutes.js';
+import workspaceCategoryRoutes from './workspaceCategoryRoutes.js';
+import corporateCalendarRoutes from './corporateCalendarRoutes.js';
+import pushRoutes from './pushRoutes.js';
 
 const router = express.Router();
 
@@ -70,21 +82,42 @@ router.use('/vendors', vendorRoutes);
 router.use('/accounts', accountRoutes);
 router.use('/category-budgets', categoryBudgetRoutes);
 router.use('/documents', documentRoutes);
+router.use('/assets', assetRoutes);
+router.use('/approvals', approvalRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);
 router.use('/calendar-events', calendarEventRoutes);
 router.use('/team-members', teamMemberRoutes);
 router.use('/team-tasks', teamTaskRoutes);
+router.use('/projects', projectRoutes);
+router.use('/crm', crmRoutes);
+router.use('/leave-requests', leaveRequestRoutes);
 router.post('/uploads/receipt', authenticateUser, requirePlusAccess, apiLimiter, receiptUpload.single('file'), uploadReceipt);
 router.post('/uploads/document', authenticateUser, requirePlusAccess, apiLimiter, documentUpload.single('file'), uploadCompanyDocument);
 router.post('/uploads/profile-picture', authenticateUser, apiLimiter, profileUpload.single('file'), uploadProfilePicture);
 router.delete('/uploads/profile-picture', authenticateUser, apiLimiter, removeProfilePicture);
-router.get('/files/receipts/:userId/:filename', authenticateUser, requirePlusAccess, apiLimiter, getReceiptFile);
-router.get('/files/documents/:userId/:filename', authenticateUser, requirePlusAccess, apiLimiter, getCompanyDocumentFile);
-router.get('/files/profile/:userId/:filename', authenticateUser, apiLimiter, getProfilePictureFile);
+router.post('/files/access-token', authenticateUser, rateLimiters.files, issueFileAccessToken);
+router.get('/files/receipts/:userId/:filename', authenticateUser, requirePlusAccess, rateLimiters.files, getReceiptFile);
+router.get('/files/documents/:userId/:filename', authenticateUser, requirePlusAccess, rateLimiters.files, getCompanyDocumentFile);
+router.get('/files/profile/:userId/:filename', authenticateFileAccess, rateLimiters.files, getProfilePictureFile);
+router.get(
+  '/files/workspace-profile/:workspaceId/:filename',
+  authenticateFileAccess,
+  rateLimiters.files,
+  getWorkspaceProfilePictureFile,
+);
+router.get(
+  '/files/chat-attachments/:workspaceId/:conversationId/:filename',
+  authenticateFileAccess,
+  rateLimiters.files,
+  getChatAttachmentFile,
+);
 router.use('/inventories', inventoryRoutes);
 router.use('/subscription', subscriptionRoutes);
 router.use('/bookings', bookingRoutes);
 router.use('/content', contentRoutes);
 router.use('/workspaces', workspaceRoutes);
+router.use('/workspace-categories', workspaceCategoryRoutes);
+router.use('/corporate-calendar', corporateCalendarRoutes);
+router.use('/push', pushRoutes);
 
 export default router;

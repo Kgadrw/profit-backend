@@ -3,6 +3,7 @@ import TeamMember from '../models/TeamMember.js';
 import Notification from '../models/Notification.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
 
 const notifyOwnerTaskCompleted = async (ownerId, task, member, completionNote) => {
   try {
@@ -166,6 +167,7 @@ export const createTeamTask = async (req, res) => {
     });
 
     const populated = await TeamTask.findById(task._id).populate('assigneeId', 'name email jobTitle department');
+    await broadcastScopeChange(req, 'team-task:created', populated);
     res.status(201).json({ data: populated });
   } catch (error) {
     console.error('Error creating team task:', error);
@@ -218,6 +220,7 @@ export const updateTeamTask = async (req, res) => {
 
     await task.save();
     const populated = await TeamTask.findById(task._id).populate('assigneeId', 'name email jobTitle department');
+    await broadcastScopeChange(req, 'team-task:updated', populated);
     res.json({ data: populated });
   } catch (error) {
     console.error('Error updating team task:', error);
@@ -246,6 +249,7 @@ export const completeTeamTask = async (req, res) => {
     }
 
     const populated = await TeamTask.findById(task._id).populate('assigneeId', 'name email jobTitle department');
+    await broadcastScopeChange(req, 'team-task:updated', populated);
     res.json({ data: populated });
   } catch (error) {
     console.error('Error completing team task:', error);
@@ -259,6 +263,10 @@ export const deleteTeamTask = async (req, res) => {
     const task = await TeamTask.findOneAndDelete(buildListQuery(req, { _id: req.params.id }));
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
+    await broadcastScopeChange(req, 'team-task:deleted', {
+      _id: task._id,
+      workspaceId: task.workspaceId,
+    });
     res.json({ message: 'Task deleted', data: task });
   } catch (error) {
     console.error('Error deleting team task:', error);

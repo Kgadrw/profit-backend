@@ -196,12 +196,20 @@ export const rateLimiters = {
     route: 'sales'
   }),
 
-  // General API: standard (100 requests per 15 minutes)
+  // General API: standard (600 requests per 15 minutes — SPAs need headroom)
   general: createSmartRateLimiter({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: parseInt(process.env.RATE_LIMIT_GENERAL_MAX || '600', 10),
     message: 'Too many API requests. Please try again later.',
     route: 'general'
+  }),
+
+  // Authenticated file reads (avatars, receipts, chat attachments)
+  files: createSmartRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_FILES_MAX || '2000', 10),
+    message: 'Too many file requests. Please try again later.',
+    route: 'files'
   }),
 
   // Admin: higher limit (300 requests per minute)

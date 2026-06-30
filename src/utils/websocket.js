@@ -1,6 +1,7 @@
 // Native WebSocket utility for real-time updates
 import { WebSocketServer } from 'ws';
 import { parse } from 'url';
+import { handleWorkspacePresenceMessage, leaveAllWorkspacePresence } from './workspacePresence.js';
 
 let wss = null;
 const connectedClients = new Map(); // Map<userId, Set<WebSocket>>
@@ -61,6 +62,14 @@ export function initializeWebSocket(server) {
         if (data.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
         }
+
+        if (
+          data.type === 'workspace:presence:join' ||
+          data.type === 'workspace:presence:heartbeat' ||
+          data.type === 'workspace:presence:leave'
+        ) {
+          void handleWorkspacePresenceMessage(ws, data);
+        }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
       }
@@ -69,6 +78,7 @@ export function initializeWebSocket(server) {
     // Handle connection close
     ws.on('close', () => {
       if (ws.userId) {
+        void leaveAllWorkspacePresence(ws.userId);
         const userConnections = connectedClients.get(ws.userId);
         if (userConnections) {
           userConnections.delete(ws);

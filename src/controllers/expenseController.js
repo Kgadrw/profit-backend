@@ -2,6 +2,11 @@ import Expense from '../models/Expense.js';
 import Vendor from '../models/Vendor.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import {
+  buildSubmissionFields,
+  getInitialApprovalStatus,
+  isWorkspaceApprovalEnabled,
+} from '../utils/approvalWorkflow.js';
 
 const normalizeExpenseDate = (value) => {
   if (!value) return new Date();
@@ -24,14 +29,30 @@ export const getExpenses = async (req, res) => {
     if (startDate || endDate) {
       query.date = {};
       if (startDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        query.date.$gte = start;
+        const start =
+          typeof startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(startDate)
+            ? (() => {
+                const [y, m, d] = startDate.split("-").map(Number);
+                return new Date(y, m - 1, d, 0, 0, 0, 0);
+              })()
+            : new Date(startDate);
+        if (!Number.isNaN(start.getTime())) {
+          start.setHours(0, 0, 0, 0);
+          query.date.$gte = start;
+        }
       }
       if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        query.date.$lte = end;
+        const end =
+          typeof endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(endDate)
+            ? (() => {
+                const [y, m, d] = endDate.split("-").map(Number);
+                return new Date(y, m - 1, d, 23, 59, 59, 999);
+              })()
+            : new Date(endDate);
+        if (!Number.isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          query.date.$lte = end;
+        }
       }
     }
 
@@ -80,6 +101,8 @@ export const createExpense = async (req, res) => {
       }
     }
 
+    const approvalStatus = getInitialApprovalStatus(req);
+
     const expense = new Expense({
       title: title?.trim(),
       amount: Number(amount),
@@ -94,6 +117,8 @@ export const createExpense = async (req, res) => {
       bankAccountNumber: bankAccountNumber ? bankAccountNumber.trim() : undefined,
       receiptUrl: receiptUrl || undefined,
       receiptFileName: receiptFileName || undefined,
+      approvalStatus,
+      ...buildSubmissionFields(req, approvalStatus),
       ...buildCreateScope(req),
     });
 
@@ -124,6 +149,10 @@ export const updateExpense = async (req, res) => {
       return res.status(404).json({ error: 'Expense not found' });
     }
 
+    if (isWorkspaceApprovalEnabled(req) && expense.approvalStatus === 'pending_approval') {
+      return res.status(400).json({ error: 'Pending expenses cannot be edited. Wait for approval or delete and recreate.' });
+    }
+
     if (title !== undefined) expense.title = title?.trim();
     if (amount !== undefined) expense.amount = Number(amount);
     if (category !== undefined) expense.category = category ? category.trim() : 'general';
@@ -145,6 +174,11 @@ export const updateExpense = async (req, res) => {
     if (bankAccountNumber !== undefined) expense.bankAccountNumber = bankAccountNumber ? bankAccountNumber.trim() : undefined;
     if (receiptUrl !== undefined) expense.receiptUrl = receiptUrl || undefined;
     if (receiptFileName !== undefined) expense.receiptFileName = receiptFileName || undefined;
+
+    if (isWorkspaceApprovalEnabled(req) && expense.approvalStatus === 'rejected') {
+      expense.approvalStatus = 'pending_approval';
+      Object.assign(expense, buildSubmissionFields(req, 'pending_approval'));
+    }
 
     await expense.save();
     res.json({ data: expense });

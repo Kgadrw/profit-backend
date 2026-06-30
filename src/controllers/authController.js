@@ -310,7 +310,8 @@ export const register = async (req, res) => {
 
 export const login = async (req, res) => {
   try {
-    const { password, email } = req.body;
+    const password = req.body.password ?? req.body.pin;
+    const { email } = req.body;
     const normalizedEmail = email ? email.toLowerCase().trim() : '';
 
     if (!password || !email) {

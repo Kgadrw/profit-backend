@@ -240,6 +240,10 @@ export const createSale = async (req, res) => {
       }
     }
 
+    if (saleData.profit == null || !Number.isFinite(Number(saleData.profit))) {
+      saleData.profit = (Number(saleData.revenue) || 0) - (Number(saleData.cost) || 0);
+    }
+
     const sale = new Sale(saleData);
     await sale.save();
 

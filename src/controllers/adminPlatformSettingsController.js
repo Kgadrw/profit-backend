@@ -17,10 +17,7 @@ export const getAdminPlatformSettings = async (req, res) => {
 export const updateAdminPlatformSettings = async (req, res) => {
   try {
     const {
-      currentPin,
       adminEmail,
-      newPin,
-      confirmNewPin,
       subscriptionAmount,
       trialDays,
       supportEmail,
@@ -31,26 +28,17 @@ export const updateAdminPlatformSettings = async (req, res) => {
       maintenanceMode,
     } = req.body;
 
-    if (!currentPin || String(currentPin).length !== 4) {
-      return res.status(400).json({ error: 'Current PIN is required to save settings' });
-    }
-
-    const doc = await updatePlatformSettings(
-      {
-        adminEmail,
-        newPin,
-        confirmNewPin,
-        subscriptionAmount,
-        trialDays,
-        supportEmail,
-        supportPhone,
-        whatsappNumber,
-        instagramUrl,
-        companyName,
-        maintenanceMode,
-      },
-      currentPin,
-    );
+    const doc = await updatePlatformSettings({
+      adminEmail,
+      subscriptionAmount,
+      trialDays,
+      supportEmail,
+      supportPhone,
+      whatsappNumber,
+      instagramUrl,
+      companyName,
+      maintenanceMode,
+    });
 
     res.json({
       message: 'Platform settings updated',

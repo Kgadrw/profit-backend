@@ -43,6 +43,18 @@ function formatMember(member, user) {
   };
 }
 
+function formatWorkspaceSummary(workspace, membership) {
+  return {
+    id: workspace._id,
+    name: workspace.name,
+    profilePictureUrl: workspace.profilePictureUrl || null,
+    role: membership.role,
+    permissions: normalizePermissions(membership.permissions, membership.role),
+    ownerId: workspace.ownerId,
+    isOwner: membership.role === 'owner',
+  };
+}
+
 export const listWorkspaces = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -51,17 +63,13 @@ export const listWorkspaces = async (req, res) => {
     const workspaces = await Workspace.find({ _id: { $in: workspaceIds } }).lean();
 
     const byId = new Map(workspaces.map((w) => [String(w._id), w]));
-    const payload = memberships.map((m) => {
-      const workspace = byId.get(String(m.workspaceId));
-      return {
-        id: workspace?._id,
-        name: workspace?.name,
-        role: m.role,
-        permissions: normalizePermissions(m.permissions, m.role),
-        ownerId: workspace?.ownerId,
-        isOwner: m.role === 'owner',
-      };
-    }).filter((w) => w.id);
+    const payload = memberships
+      .map((m) => {
+        const workspace = byId.get(String(m.workspaceId));
+        if (!workspace) return null;
+        return formatWorkspaceSummary(workspace, m);
+      })
+      .filter(Boolean);
 
     res.json({ workspaces: payload, pages: WORKSPACE_PAGES });
   } catch (error) {
@@ -102,6 +110,7 @@ export const updateWorkspace = async (req, res) => {
       workspace: {
         id: workspace._id,
         name: workspace.name,
+        profilePictureUrl: workspace.profilePictureUrl || null,
         role: membership?.role,
         permissions: normalizePermissions(membership?.permissions, membership?.role),
         isOwner: membership?.role === 'owner',
@@ -140,6 +149,7 @@ export const createWorkspace = async (req, res) => {
       workspace: {
         id: workspace._id,
         name: workspace.name,
+        profilePictureUrl: workspace.profilePictureUrl || null,
         role: 'owner',
         permissions: ALL_WORKSPACE_PAGE_KEYS,
         isOwner: true,

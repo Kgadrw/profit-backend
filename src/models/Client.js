@@ -53,6 +53,34 @@ const clientSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  lifecycleStage: {
+    type: String,
+    enum: ['lead', 'prospect', 'customer', 'inactive'],
+    default: 'lead',
+    index: true,
+  },
+  source: {
+    type: String,
+    trim: true,
+  },
+  companyName: {
+    type: String,
+    trim: true,
+  },
+  address: {
+    type: String,
+    trim: true,
+  },
+  ownerUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+    index: true,
+  },
+  tags: {
+    type: [String],
+    default: [],
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

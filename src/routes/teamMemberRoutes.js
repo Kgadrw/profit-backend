@@ -2,6 +2,7 @@ import express from 'express';
 import {
   getTeamMembers,
   getTeamMember,
+  getTeamMemberProfile,
   createTeamMember,
   updateTeamMember,
   deleteTeamMember,
@@ -20,6 +21,7 @@ router.use(requirePlusAccess);
 router.use(apiLimiter);
 
 router.get('/', getTeamMembers);
+router.get('/:id/profile', validateObjectId, getTeamMemberProfile);
 router.get('/:id', validateObjectId, getTeamMember);
 router.post('/', createTeamMember);
 router.put('/:id', validateObjectId, updateTeamMember);
