@@ -88,9 +88,11 @@ function applyRegistryFields(document, body) {
     if (['effectiveDate', 'expiryDate', 'renewalDate'].includes(field)) {
       document[field] = normalizeDocumentDate(body[field]) || null;
     } else if (field === 'registryType') {
-      if (REGISTRY_TYPES.includes(body.registryType)) document.registryType = body.registryType;
+      if (!body.registryType) document.registryType = undefined;
+      else if (REGISTRY_TYPES.includes(body.registryType)) document.registryType = body.registryType;
     } else if (field === 'registryStatus') {
-      if (REGISTRY_STATUSES.includes(body.registryStatus)) document.registryStatus = body.registryStatus;
+      if (!body.registryStatus) document.registryStatus = undefined;
+      else if (REGISTRY_STATUSES.includes(body.registryStatus)) document.registryStatus = body.registryStatus;
     } else if (typeof body[field] === 'string') {
       document[field] = body[field].trim();
     } else {
@@ -243,7 +245,7 @@ export const createDocument = async (req, res) => {
 
     const document = new CompanyDocument({
       title: title.trim(),
-      category: category ? category.trim() : 'general',
+      category: category ? category.trim() : undefined,
       date: normalizeDocumentDate(date),
       note: note ? note.trim() : undefined,
       fileUrl,
@@ -295,7 +297,7 @@ export const updateDocument = async (req, res) => {
     const { title, category, date, note, fileUrl, fileName, fileSize, changeNote } = req.body;
 
     if (title !== undefined) document.title = title.trim();
-    if (category !== undefined) document.category = category ? category.trim() : 'general';
+    if (category !== undefined) document.category = category ? category.trim() : undefined;
     if (date !== undefined) document.date = normalizeDocumentDate(date);
     if (note !== undefined) document.note = note ? note.trim() : undefined;
     applyRegistryFields(document, req.body);

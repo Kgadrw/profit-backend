@@ -59,6 +59,11 @@ const expenseSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Account',
     },
+    /** Optional second account (e.g. clearing / credited ledger account). */
+    creditedAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account',
+    },
     receiptUrl: {
       type: String,
       trim: true,

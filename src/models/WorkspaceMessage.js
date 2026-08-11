@@ -26,9 +26,9 @@ const workspaceMessageSchema = new mongoose.Schema(
     },
     body: {
       type: String,
-      required: true,
       trim: true,
       maxlength: 4000,
+      default: '',
     },
     mentionAll: {
       type: Boolean,
@@ -48,6 +48,14 @@ const workspaceMessageSchema = new mongoose.Schema(
         },
       },
     ],
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
     deliveredTo: [
       {
         userId: {
@@ -82,6 +90,12 @@ const workspaceMessageSchema = new mongoose.Schema(
           type: Date,
           default: Date.now,
         },
+      },
+    ],
+    unreadEmailRemindedUserIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
       },
     ],
   },

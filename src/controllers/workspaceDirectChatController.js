@@ -6,6 +6,9 @@ import User from '../models/User.js';
 import { emitToUser } from '../utils/websocket.js';
 import { notifyDirectMessagePush } from '../utils/pushNotifications.js';
 import { saveStoredFile } from '../utils/storedFileService.js';
+import { notifyDirectMessageRecipient } from '../utils/chatNotifications.js';
+import Workspace from '../models/Workspace.js';
+import WorkspaceMessage from '../models/WorkspaceMessage.js';
 
 export const WORKSPACE_DM_MESSAGE_EVENT = 'workspace-dm:message';
 export const WORKSPACE_DM_READ_EVENT = 'workspace-dm:read';
@@ -96,6 +99,7 @@ async function countUnreadForConversation(conversationId, userId) {
     conversationId,
     senderUserId: { $ne: userId },
     'readBy.userId': { $ne: userId },
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
   });
 }
 
@@ -423,6 +427,22 @@ export const sendDirectChatMessage = async (req, res) => {
       }).catch((pushError) => {
         console.error('Direct message push error:', pushError);
       });
+
+      void Workspace.findById(workspaceId)
+        .select('name')
+        .lean()
+        .then((workspace) =>
+          notifyDirectMessageRecipient({
+            workspaceId,
+            workspaceName: workspace?.name || 'Workspace',
+            message: payload,
+            recipientUserId: recipientId,
+            otherUserIdForRoute: String(user._id),
+          }),
+        )
+        .catch((error) => {
+          console.error('Direct message in-app notification error:', error);
+        });
     }
 
     res.status(201).json({ data: message });
@@ -618,5 +638,52 @@ export const deleteDirectChatMessage = async (req, res) => {
   } catch (error) {
     console.error('Delete direct chat message error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to delete message' });
+  }
+};
+
+export const getChatUnreadSummary = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+
+    await assertWorkspaceMember(workspaceId, userId);
+
+    const [groupUnread, conversations] = await Promise.all([
+      WorkspaceMessage.countDocuments({
+        workspaceId,
+        senderUserId: { $ne: userId },
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+        'readBy.userId': { $ne: userId },
+      }),
+      WorkspaceDirectConversation.find({
+        workspaceId,
+        participantIds: userId,
+      })
+        .select('_id')
+        .lean(),
+    ]);
+
+    let directUnread = 0;
+    if (conversations.length) {
+      const counts = await Promise.all(
+        conversations.map((row) => countUnreadForConversation(row._id, userId)),
+      );
+      directUnread = counts.reduce((sum, value) => sum + value, 0);
+    }
+
+    res.json({
+      data: {
+        groupUnread,
+        directUnread,
+        total: groupUnread + directUnread,
+      },
+    });
+  } catch (error) {
+    console.error('Get chat unread summary error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load unread summary' });
   }
 };

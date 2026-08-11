@@ -32,6 +32,7 @@ async function verifyGoogleCredential(credential) {
     email: payload.email.toLowerCase().trim(),
     name: (payload.name || payload.email.split('@')[0] || 'User').trim(),
     emailVerified: payload.email_verified === true,
+    picture: typeof payload.picture === 'string' ? payload.picture.trim() : '',
   };
 }
 
@@ -48,6 +49,9 @@ function resolveAuthProvider(user) {
 async function linkGoogleProfile(user, profile) {
   if (!user.googleId) {
     user.googleId = profile.googleId;
+  }
+  if (profile.picture && !user.profilePictureUrl) {
+    user.profilePictureUrl = profile.picture;
   }
   user.authProvider = resolveAuthProvider(user);
   await user.save();
@@ -72,6 +76,7 @@ async function createGoogleUser(profile) {
     email: profile.email,
     googleId: profile.googleId,
     authProvider: 'google',
+    profilePictureUrl: profile.picture || undefined,
     role: 'salon_owner',
     paymentPlan: {
       active: true,
@@ -315,7 +320,7 @@ export const login = async (req, res) => {
     const normalizedEmail = email ? email.toLowerCase().trim() : '';
 
     if (!password || !email) {
-      return res.status(400).json({ error: 'Email and password are required' });
+      return res.status(400).json({ error: 'Email and password or PIN are required' });
     }
 
     if (await tryAdminLogin(normalizedEmail, password)) {

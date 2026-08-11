@@ -3,13 +3,10 @@ import Schedule from '../models/Schedule.js';
 import LeaveRequest from '../models/LeaveRequest.js';
 import ProjectMilestone from '../models/ProjectMilestone.js';
 import Project from '../models/Project.js';
-import CrmActivity from '../models/CrmActivity.js';
-import Client from '../models/Client.js';
 import CompanyAnnouncement from '../models/CompanyAnnouncement.js';
 import { buildListQuery, buildCreateScope, assertPageAccess, buildActorFields } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
-import { canAccessWorkspacePage } from '../constants/workspacePermissions.js';
-import { canApproveRecords } from '../utils/approvalWorkflow.js';
+import { canAccessWorkspacePage, canReviewLeaveRequests } from '../constants/workspacePermissions.js';
 
 const ANNOUNCEMENT_SCOPES = ['workspace', 'regional', 'global'];
 const ANNOUNCEMENT_PRIORITIES = ['normal', 'high', 'critical'];
@@ -42,9 +39,10 @@ function hasPageAccess(req, pageKey) {
   return canAccessWorkspacePage(scope.role, scope.permissions, pageKey);
 }
 
-function canManageBroadAnnouncements(req) {
-  const role = req.dataScope?.role;
-  return role === 'owner' || role === 'admin';
+function canManageAnnouncements(req) {
+  const scope = req.dataScope;
+  if (!scope || scope.mode !== 'workspace') return false;
+  return scope.role === 'owner' || scope.role === 'admin';
 }
 
 function normalizeAnnouncement(record) {
@@ -77,7 +75,6 @@ export const getCorporateCalendarSummary = async (req, res) => {
 
     const canSeeLeave = hasPageAccess(req, 'team');
     const canSeeProjects = hasPageAccess(req, 'projects');
-    const canSeeCrm = hasPageAccess(req, 'crm');
 
     const queries = [
       CalendarEvent.countDocuments({
@@ -115,16 +112,6 @@ export const getCorporateCalendarSummary = async (req, res) => {
       );
     }
 
-    if (canSeeCrm) {
-      queries.push(
-        CrmActivity.countDocuments({
-          ...scope,
-          activityType: 'meeting',
-          occurredAt: { $gte: now, $lte: weekAhead },
-        }),
-      );
-    }
-
     const results = await Promise.all(queries);
     let index = 0;
     const upcomingMeetings = results[index++];
@@ -132,7 +119,6 @@ export const getCorporateCalendarSummary = async (req, res) => {
     const pendingAutomations = results[index++];
     const approvedLeaveWindows = canSeeLeave ? results[index++] : 0;
     const upcomingMilestones = canSeeProjects ? results[index++] : 0;
-    const clientMeetings = canSeeCrm ? results[index++] : 0;
 
     res.json({
       data: {
@@ -141,7 +127,6 @@ export const getCorporateCalendarSummary = async (req, res) => {
         pendingAutomations,
         approvedLeaveWindows,
         upcomingMilestones,
-        clientMeetings,
       },
     });
   } catch (error) {
@@ -164,7 +149,6 @@ export const getCorporateCalendarFeed = async (req, res) => {
     const items = [];
     const canSeeLeave = hasPageAccess(req, 'team');
     const canSeeProjects = hasPageAccess(req, 'projects');
-    const canSeeCrm = hasPageAccess(req, 'crm');
 
     const announcements = await CompanyAnnouncement.find({
       ...scope,
@@ -199,8 +183,12 @@ export const getCorporateCalendarFeed = async (req, res) => {
         endDate: { $gte: rangeStart },
       };
 
-      if (!canApproveRecords(req)) {
-        leaveQuery.requesterUserId = req.user._id;
+      const canReviewLeave = canReviewLeaveRequests(req.dataScope?.role, req.dataScope?.permissions);
+      if (!canReviewLeave) {
+        leaveQuery.$or = [
+          { requesterUserId: req.user._id },
+          { isPublic: true },
+        ];
       }
 
       const leaves = await LeaveRequest.find(leaveQuery).sort({ startDate: 1 });
@@ -253,41 +241,6 @@ export const getCorporateCalendarFeed = async (req, res) => {
       }
     }
 
-    if (canSeeCrm) {
-      const meetings = await CrmActivity.find({
-        ...scope,
-        activityType: 'meeting',
-        occurredAt: { $gte: rangeStart, $lte: rangeEnd },
-      })
-        .sort({ occurredAt: 1 })
-        .lean();
-
-      const clientIds = [...new Set(meetings.map((m) => String(m.clientId)))];
-      const clients = clientIds.length
-        ? await Client.find({ ...scope, _id: { $in: clientIds } }).select('name companyName').lean()
-        : [];
-      const clientNames = new Map(
-        clients.map((c) => [String(c._id), c.companyName || c.name || 'Client']),
-      );
-
-      for (const row of meetings) {
-        const clientName = clientNames.get(String(row.clientId)) || 'Client';
-        items.push(
-          feedItem({
-            id: `crm-meeting-${row._id}`,
-            feedType: 'crm_meeting',
-            title: row.subject || `Meeting — ${clientName}`,
-            startDate: row.occurredAt,
-            allDay: false,
-            subtitle: clientName,
-            link: `/crm/contacts/${row.clientId}`,
-            color: '#2563eb',
-            meta: { clientId: String(row.clientId), channel: row.channel },
-          }),
-        );
-      }
-    }
-
     res.json({ data: items });
   } catch (error) {
     console.error('Error fetching corporate calendar feed:', error);
@@ -302,6 +255,11 @@ export const getCompanyAnnouncements = async (req, res) => {
     const query = buildListQuery(req);
     if (ANNOUNCEMENT_STATUSES.includes(status)) query.status = status;
 
+    // Members can view published announcements only; admins/owners see all statuses.
+    if (!canManageAnnouncements(req)) {
+      query.status = 'published';
+    }
+
     const rows = await CompanyAnnouncement.find(query).sort({ startDate: -1, createdAt: -1 });
     res.json({ data: rows.map(normalizeAnnouncement) });
   } catch (error) {
@@ -313,6 +271,9 @@ export const getCompanyAnnouncements = async (req, res) => {
 export const createCompanyAnnouncement = async (req, res) => {
   try {
     assertPageAccess(req, 'calendar');
+    if (!canManageAnnouncements(req)) {
+      return res.status(403).json({ error: 'Only workspace owners and admins can create announcements' });
+    }
     const {
       title,
       body,
@@ -333,9 +294,6 @@ export const createCompanyAnnouncement = async (req, res) => {
     }
 
     const announcementScope = ANNOUNCEMENT_SCOPES.includes(scope) ? scope : 'workspace';
-    if (announcementScope !== 'workspace' && !canManageBroadAnnouncements(req)) {
-      return res.status(403).json({ error: 'Only workspace owners and admins can publish regional or global announcements' });
-    }
 
     const row = await CompanyAnnouncement.create({
       title: title.trim(),
@@ -361,6 +319,9 @@ export const createCompanyAnnouncement = async (req, res) => {
 export const updateCompanyAnnouncement = async (req, res) => {
   try {
     assertPageAccess(req, 'calendar');
+    if (!canManageAnnouncements(req)) {
+      return res.status(403).json({ error: 'Only workspace owners and admins can update announcements' });
+    }
     const row = await CompanyAnnouncement.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!row) {
       return res.status(404).json({ error: 'Announcement not found' });
@@ -374,11 +335,7 @@ export const updateCompanyAnnouncement = async (req, res) => {
       } else if (field === 'allDay') {
         row.allDay = Boolean(req.body.allDay);
       } else if (field === 'scope') {
-        const nextScope = ANNOUNCEMENT_SCOPES.includes(req.body.scope) ? req.body.scope : row.scope;
-        if (nextScope !== 'workspace' && !canManageBroadAnnouncements(req)) {
-          return res.status(403).json({ error: 'Only workspace owners and admins can publish regional or global announcements' });
-        }
-        row.scope = nextScope;
+        row.scope = ANNOUNCEMENT_SCOPES.includes(req.body.scope) ? req.body.scope : row.scope;
       } else if (field === 'regionCode') {
         row.regionCode = REGION_CODES.includes(req.body.regionCode) ? req.body.regionCode : row.regionCode;
       } else if (field === 'priority') {
@@ -403,6 +360,9 @@ export const updateCompanyAnnouncement = async (req, res) => {
 export const deleteCompanyAnnouncement = async (req, res) => {
   try {
     assertPageAccess(req, 'calendar');
+    if (!canManageAnnouncements(req)) {
+      return res.status(403).json({ error: 'Only workspace owners and admins can delete announcements' });
+    }
     const row = await CompanyAnnouncement.findOneAndDelete(buildListQuery(req, { _id: req.params.id }));
     if (!row) {
       return res.status(404).json({ error: 'Announcement not found' });

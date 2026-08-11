@@ -99,6 +99,16 @@ const teamMemberSchema = new mongoose.Schema(
 );
 
 teamMemberSchema.index({ userId: 1, status: 1 });
+teamMemberSchema.index(
+  { workspaceId: 1, linkedUserId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      workspaceId: { $type: 'objectId' },
+      linkedUserId: { $type: 'objectId' },
+    },
+  },
+);
 
 const TeamMember = mongoose.model('TeamMember', teamMemberSchema);
 

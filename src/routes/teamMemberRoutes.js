@@ -6,6 +6,7 @@ import {
   createTeamMember,
   updateTeamMember,
   deleteTeamMember,
+  syncTeamMembersFromActiveWorkspace,
 } from '../controllers/teamMemberController.js';
 import { apiLimiter } from '../middleware/security.js';
 import { validateObjectId } from '../middleware/validation.js';
@@ -21,6 +22,7 @@ router.use(requirePlusAccess);
 router.use(apiLimiter);
 
 router.get('/', getTeamMembers);
+router.post('/sync-from-workspace', syncTeamMembersFromActiveWorkspace);
 router.get('/:id/profile', validateObjectId, getTeamMemberProfile);
 router.get('/:id', validateObjectId, getTeamMember);
 router.post('/', createTeamMember);

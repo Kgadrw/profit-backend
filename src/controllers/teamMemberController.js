@@ -4,6 +4,7 @@ import LeaveRequest from '../models/LeaveRequest.js';
 import Payroll from '../models/Payroll.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import { syncTeamMembersFromWorkspace } from '../utils/syncTeamFromWorkspace.js';
 
 const HR_STRING_FIELDS = [
   'name',
@@ -243,6 +244,38 @@ export const createTeamMember = async (req, res) => {
     res.status(201).json({ data: member });
   } catch (error) {
     console.error('Error creating team member:', error);
+    handleScopeError(res, error);
+  }
+};
+
+/** Import / refresh Team members from the active workspace membership list. */
+export const syncTeamMembersFromActiveWorkspace = async (req, res) => {
+  try {
+    assertPageAccess(req, 'team');
+    const scope = req.dataScope;
+    if (scope?.mode !== 'workspace' || !scope.workspaceId) {
+      return res.status(400).json({
+        error: 'Switch to a workspace to synchronize team members from workspace membership.',
+      });
+    }
+
+    const result = await syncTeamMembersFromWorkspace({
+      workspaceId: scope.workspaceId,
+      createdByUserId: req.user._id,
+      markMissingInactive: true,
+    });
+
+    const members = await TeamMember.find(buildListQuery(req))
+      .populate('reportsToId', 'name jobTitle')
+      .sort({ name: 1 });
+
+    res.json({
+      message: 'Team synchronized from workspace',
+      data: members,
+      sync: result,
+    });
+  } catch (error) {
+    console.error('Error syncing team members from workspace:', error);
     handleScopeError(res, error);
   }
 };

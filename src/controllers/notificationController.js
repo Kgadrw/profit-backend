@@ -51,7 +51,7 @@ export const createNotification = async (req, res) => {
       return res.status(400).json({ error: 'title and body are required' });
     }
 
-    const allowedTypes = ['low_stock', 'schedule', 'new_sale', 'new_product', 'general', 'task_completed', 'task_assigned', 'workspace_invite'];
+    const allowedTypes = ['low_stock', 'schedule', 'new_sale', 'new_product', 'general', 'task_completed', 'task_assigned', 'workspace_invite', 'workspace_message'];
     const normalizedType = allowedTypes.includes(type) ? type : 'general';
 
     const notification = await Notification.create({

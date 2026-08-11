@@ -1,14 +1,43 @@
 import mongoose from 'mongoose';
 import { canAccessWorkspacePage } from '../constants/workspacePermissions.js';
 
+function isValidObjectId(value) {
+  if (value == null) return false;
+  const str = String(value);
+  return mongoose.Types.ObjectId.isValid(str) && String(new mongoose.Types.ObjectId(str)) === str;
+}
+
+function toObjectId(value, label = 'id') {
+  if (!isValidObjectId(value)) {
+    const error = new Error(`Invalid ${label}`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return new mongoose.Types.ObjectId(String(value));
+}
+
+function isAdminUser(req) {
+  return Boolean(req.user?.isAdmin) || String(req.user?._id || '') === 'admin';
+}
+
+/** Match-nothing filter for callers with no personal data scope (e.g. admin). */
+function emptyListQuery(extra = {}) {
+  return { _id: { $in: [] }, ...extra };
+}
+
 /** Build MongoDB filter for list/read operations (personal vs workspace). */
 export function buildListQuery(req, extra = {}) {
   const scope = req.dataScope;
   if (scope?.mode === 'workspace' && scope.workspaceId) {
     return {
-      workspaceId: new mongoose.Types.ObjectId(scope.workspaceId),
+      workspaceId: toObjectId(scope.workspaceId, 'workspace id'),
       ...extra,
     };
+  }
+
+  // Admin sessions use the literal id "admin" — they have no personal business data.
+  if (isAdminUser(req)) {
+    return emptyListQuery(extra);
   }
 
   const userId = req.user?._id;
@@ -16,8 +45,14 @@ export function buildListQuery(req, extra = {}) {
     throw new Error('User context required');
   }
 
+  if (!isValidObjectId(userId)) {
+    const error = new Error('Invalid user id');
+    error.statusCode = 401;
+    throw error;
+  }
+
   return {
-    userId: new mongoose.Types.ObjectId(userId),
+    userId: toObjectId(userId, 'user id'),
     $or: [{ workspaceId: { $exists: false } }, { workspaceId: null }],
     ...extra,
   };
@@ -31,15 +66,21 @@ export function buildCreateScope(req) {
     throw new Error('User context required');
   }
 
+  if (isAdminUser(req) || !isValidObjectId(userId)) {
+    const error = new Error('Admin cannot create personal business records. Sign in as a user.');
+    error.statusCode = 403;
+    throw error;
+  }
+
   if (scope?.mode === 'workspace' && scope.workspaceId) {
     return {
-      userId: new mongoose.Types.ObjectId(userId),
-      workspaceId: new mongoose.Types.ObjectId(scope.workspaceId),
+      userId: toObjectId(userId, 'user id'),
+      workspaceId: toObjectId(scope.workspaceId, 'workspace id'),
     };
   }
 
   return {
-    userId: new mongoose.Types.ObjectId(userId),
+    userId: toObjectId(userId, 'user id'),
     workspaceId: null,
   };
 }
@@ -48,19 +89,19 @@ export function buildActorFields(req, { isUpdate = false } = {}) {
   const user = req.user;
   if (!user?._id) return {};
 
-  const name = user.name || 'User';
+  const name = user.name || (isAdminUser(req) ? 'Admin' : 'User');
+  const actorId = isValidObjectId(user._id) ? user._id : undefined;
 
   if (isUpdate) {
     return {
-      updatedByUserId: user._id,
+      ...(actorId ? { updatedByUserId: actorId } : {}),
       updatedByName: name,
     };
   }
 
   return {
-    createdByUserId: user._id,
+    ...(actorId ? { createdByUserId: actorId, updatedByUserId: actorId } : {}),
     createdByName: name,
-    updatedByUserId: user._id,
     updatedByName: name,
   };
 }

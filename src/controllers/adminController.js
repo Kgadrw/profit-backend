@@ -1360,7 +1360,7 @@ export const updateUserPaymentPlan = async (req, res) => {
   }
 };
 
-// Mark user as paid and roll next due date forward (admin only)
+// Mark user as paid, grant Plus access, and record a manual payment
 export const markUserPaid = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1371,11 +1371,52 @@ export const markUserPaid = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const paidAt = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
-    const plan = applySuccessfulPayment(user, paidAt);
-    await User.updateOne({ _id: user._id }, { $set: { paymentPlan: plan } });
+    const paidAtRaw = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
+    const paidAt = Number.isNaN(paidAtRaw.getTime()) ? new Date() : paidAtRaw;
 
-    res.json({ message: 'Payment marked as paid', data: plan });
+    const plan = applySuccessfulPayment(user, paidAt);
+    // Persist via document save so nested paymentPlan fields are written reliably
+    user.markModified('paymentPlan');
+    await user.save();
+
+    const amount = Number(plan.amount) || 0;
+    const currency = plan.currency || 'RWF';
+    const stamp = paidAt.getTime();
+    const referenceId = `admin-manual-${userId}-${stamp}`;
+
+    try {
+      await SubscriptionPayment.create({
+        userId: user._id,
+        referenceId,
+        externalId: referenceId,
+        amount,
+        currency,
+        msisdn: 'ADMIN',
+        provider: 'admin',
+        idempotencyKey: referenceId,
+        providerStatus: 'SUCCESSFUL',
+        status: 'SUCCESSFUL',
+        mtnStatus: 'admin_manual',
+        mtnReason: 'Marked paid by admin — platform access granted',
+        paidAt,
+        lastSyncAt: paidAt,
+      });
+    } catch (paymentLogError) {
+      // Access is already granted; payment log is best-effort (e.g. duplicate reference)
+      console.warn('Mark paid: could not create subscription payment log:', paymentLogError?.message || paymentLogError);
+    }
+
+    const subscription = serializePaymentPlan(user);
+
+    res.json({
+      message: 'User marked as paid. Platform access granted.',
+      data: {
+        paymentPlan: plan,
+        subscription,
+        hasPlus: subscription?.hasPlus === true,
+        accessGranted: subscription?.hasPlus === true,
+      },
+    });
   } catch (error) {
     console.error('Mark paid error:', error);
     res.status(500).json({ error: error.message || 'Failed to mark paid' });

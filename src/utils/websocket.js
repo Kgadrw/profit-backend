@@ -2,6 +2,11 @@
 import { WebSocketServer } from 'ws';
 import { parse } from 'url';
 import { handleWorkspacePresenceMessage, leaveAllWorkspacePresence } from './workspacePresence.js';
+import {
+  WORKSPACE_CHAT_TYPING_EVENT,
+  WORKSPACE_DM_TYPING_EVENT,
+  handleWorkspaceChatTypingMessage,
+} from './workspaceChatTyping.js';
 
 let wss = null;
 const connectedClients = new Map(); // Map<userId, Set<WebSocket>>
@@ -69,6 +74,10 @@ export function initializeWebSocket(server) {
           data.type === 'workspace:presence:leave'
         ) {
           void handleWorkspacePresenceMessage(ws, data);
+        }
+
+        if (data.type === WORKSPACE_CHAT_TYPING_EVENT || data.type === WORKSPACE_DM_TYPING_EVENT) {
+          void handleWorkspaceChatTypingMessage(ws, data);
         }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);

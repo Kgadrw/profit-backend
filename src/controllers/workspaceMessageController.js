@@ -5,6 +5,7 @@ import Workspace from '../models/Workspace.js';
 import User from '../models/User.js';
 import { broadcastToWorkspace } from '../utils/workspaceRealtime.js';
 import { notifyWorkspaceChatPush } from '../utils/pushNotifications.js';
+import { notifyWorkspaceGroupMessageRecipients } from '../utils/chatNotifications.js';
 
 async function assertWorkspaceMember(workspaceId, userId) {
   const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
@@ -133,7 +134,7 @@ export const getWorkspaceMessages = async (req, res) => {
       WorkspaceMessage.find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
-        .select('workspaceId senderUserId senderName senderProfilePictureUrl body mentionAll mentions deliveredTo readBy createdAt')
+        .select('workspaceId senderUserId senderName senderProfilePictureUrl body mentionAll mentions deliveredTo readBy editedAt deletedAt createdAt')
         .lean(),
     ]);
 
@@ -203,6 +204,15 @@ export const sendWorkspaceMessage = async (req, res) => {
       senderUserId: user._id,
     }).catch((error) => {
       console.error('Workspace chat push notification error:', error);
+    });
+
+    void notifyWorkspaceGroupMessageRecipients({
+      workspaceId,
+      workspaceName: workspace?.name || 'Workspace',
+      message: payload,
+      memberUsers,
+    }).catch((error) => {
+      console.error('Workspace chat in-app notification error:', error);
     });
 
     res.status(201).json({ data: message });
@@ -284,5 +294,96 @@ export const markWorkspaceMessagesRead = async (req, res) => {
   } catch (error) {
     console.error('Mark workspace messages read error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to mark messages read' });
+  }
+};
+
+export const editWorkspaceMessage = async (req, res) => {
+  try {
+    const { workspaceId, messageId } = req.params;
+    const { body } = req.body || {};
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: 'Invalid message id' });
+    }
+
+    const trimmedBody = String(body || '').trim();
+    if (!trimmedBody) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    await assertWorkspaceMember(workspaceId, userId);
+
+    const message = await WorkspaceMessage.findOne({ _id: messageId, workspaceId });
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    if (String(message.senderUserId) !== String(userId)) {
+      return res.status(403).json({ error: 'You can only edit your own messages' });
+    }
+    if (message.deletedAt) {
+      return res.status(400).json({ error: 'Deleted messages cannot be edited' });
+    }
+
+    const memberUsers = await getWorkspaceMemberUsers(workspaceId);
+    const { mentionAll, mentions } = resolveMentionsFromBody(trimmedBody, memberUsers, userId);
+
+    message.body = trimmedBody;
+    message.mentionAll = mentionAll;
+    message.mentions = mentions;
+    message.editedAt = new Date();
+    await message.save();
+
+    const payload = message.toObject();
+    await broadcastToWorkspace(workspaceId, 'workspace-chat:edit', payload);
+
+    res.json({ data: message });
+  } catch (error) {
+    console.error('Edit workspace message error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to edit message' });
+  }
+};
+
+export const deleteWorkspaceMessage = async (req, res) => {
+  try {
+    const { workspaceId, messageId } = req.params;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: 'Invalid message id' });
+    }
+
+    await assertWorkspaceMember(workspaceId, userId);
+
+    const message = await WorkspaceMessage.findOne({ _id: messageId, workspaceId });
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    if (String(message.senderUserId) !== String(userId)) {
+      return res.status(403).json({ error: 'You can only delete your own messages' });
+    }
+    if (message.deletedAt) {
+      return res.status(400).json({ error: 'Message is already deleted' });
+    }
+
+    message.deletedAt = new Date();
+    message.body = '';
+    message.mentionAll = false;
+    message.mentions = [];
+    await message.save();
+
+    const payload = message.toObject();
+    await broadcastToWorkspace(workspaceId, 'workspace-chat:delete', payload);
+
+    res.json({ data: message });
+  } catch (error) {
+    console.error('Delete workspace message error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to delete message' });
   }
 };

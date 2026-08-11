@@ -89,7 +89,7 @@ export const createExpense = async (req, res) => {
       return res.status(403).json({ error: 'Admin cannot create expenses' });
     }
 
-    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId } = req.body;
+    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId, creditedAccountId } = req.body;
 
     let vendorName;
     let resolvedVendorId;
@@ -112,6 +112,7 @@ export const createExpense = async (req, res) => {
       vendorId: resolvedVendorId,
       vendorName,
       accountId: accountId || undefined,
+      creditedAccountId: creditedAccountId || undefined,
       paymentMethod: paymentMethod || 'cash',
       bankAccountName: bankAccountName ? bankAccountName.trim() : undefined,
       bankAccountNumber: bankAccountNumber ? bankAccountNumber.trim() : undefined,
@@ -142,7 +143,7 @@ export const updateExpense = async (req, res) => {
       return res.status(403).json({ error: 'Admin cannot update expenses' });
     }
 
-    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId } = req.body;
+    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId, creditedAccountId } = req.body;
     const expense = await Expense.findOne(buildListQuery(req, { _id: req.params.id }));
 
     if (!expense) {
@@ -169,6 +170,7 @@ export const updateExpense = async (req, res) => {
       }
     }
     if (accountId !== undefined) expense.accountId = accountId || undefined;
+    if (creditedAccountId !== undefined) expense.creditedAccountId = creditedAccountId || undefined;
     if (paymentMethod !== undefined) expense.paymentMethod = paymentMethod || 'cash';
     if (bankAccountName !== undefined) expense.bankAccountName = bankAccountName ? bankAccountName.trim() : undefined;
     if (bankAccountNumber !== undefined) expense.bankAccountNumber = bankAccountNumber ? bankAccountNumber.trim() : undefined;

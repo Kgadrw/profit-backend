@@ -16,6 +16,7 @@ import {
 import { getTrialEndsAt, isOnTrial } from './paymentPlanUtils.js';
 import Expense from '../models/Expense.js';
 import { reconcileStuckSubscriptionPayments } from '../controllers/subscriptionController.js';
+import { checkUnreadMessageEmailReminders } from './chatNotifications.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -137,10 +138,20 @@ export const startScheduler = () => {
   cron.schedule('0 8 * * *', async () => {
     await checkAndSendMonthlyPaymentReminders();
     await checkRecurringExpenses();
+    try {
+      await checkUnreadMessageEmailReminders();
+    } catch (error) {
+      console.error('Error checking unread message email reminders:', error);
+    }
   });
   // Also run on startup once
   checkAndSendMonthlyPaymentReminders();
   checkRecurringExpenses();
+  setTimeout(() => {
+    checkUnreadMessageEmailReminders().catch((error) => {
+      console.error('Startup unread message email check failed:', error);
+    });
+  }, 20000);
 
   // Reconcile stuck subscription payments every 5 minutes
   cron.schedule('*/5 * * * *', async () => {

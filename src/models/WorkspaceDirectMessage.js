@@ -70,6 +70,12 @@ const workspaceDirectMessageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    unreadEmailRemindedUserIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
   },
   { timestamps: true },
 );

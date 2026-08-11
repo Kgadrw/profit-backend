@@ -1,6 +1,7 @@
 import path from 'path';
 import mongoose from 'mongoose';
 import StoredFile from '../models/StoredFile.js';
+import { toNodeBuffer } from './documentCrypto.js';
 
 /** MongoDB-backed file storage — bytes live in StoredFile.data (Buffer), not on disk. */
 
@@ -160,8 +161,9 @@ export async function deleteStoredFilesForOwner(ownerId, kind) {
 }
 
 export function sendStoredFile(res, stored) {
-  res.set('Content-Type', stored.mimeType);
-  res.set('Content-Length', String(stored.size));
-  res.set('Content-Disposition', `inline; filename="${stored.originalName.replace(/"/g, '')}"`);
-  res.send(stored.data);
+  const data = toNodeBuffer(stored.data);
+  res.set('Content-Type', stored.mimeType || 'application/octet-stream');
+  res.set('Content-Length', String(data.length));
+  res.set('Content-Disposition', `inline; filename="${String(stored.originalName || 'file').replace(/"/g, '')}"`);
+  res.send(data);
 }

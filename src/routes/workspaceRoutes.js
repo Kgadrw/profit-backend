@@ -16,6 +16,8 @@ import {
   getWorkspaceMessages,
   sendWorkspaceMessage,
   markWorkspaceMessagesRead,
+  editWorkspaceMessage,
+  deleteWorkspaceMessage,
 } from '../controllers/workspaceMessageController.js';
 import {
   listDirectChatThreads,
@@ -26,6 +28,7 @@ import {
   editDirectChatMessage,
   deleteDirectChatMessage,
   uploadDirectChatAttachment,
+  getChatUnreadSummary,
 } from '../controllers/workspaceDirectChatController.js';
 import {
   profileUpload,
@@ -56,6 +59,9 @@ router.get('/:workspaceId/members', getWorkspaceMembers);
 router.get('/:workspaceId/messages', getWorkspaceMessages);
 router.post('/:workspaceId/messages', sendWorkspaceMessage);
 router.post('/:workspaceId/messages/read', markWorkspaceMessagesRead);
+router.get('/:workspaceId/chat-unread-summary', getChatUnreadSummary);
+router.patch('/:workspaceId/messages/:messageId', editWorkspaceMessage);
+router.delete('/:workspaceId/messages/:messageId', deleteWorkspaceMessage);
 router.get('/:workspaceId/direct-chats', listDirectChatThreads);
 router.post('/:workspaceId/direct-chats', openDirectChat);
 router.get('/:workspaceId/direct-chats/:conversationId/messages', getDirectChatMessages);

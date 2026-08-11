@@ -4,8 +4,10 @@ import ProjectTask from '../models/ProjectTask.js';
 import ProjectMember from '../models/ProjectMember.js';
 import TimeEntry from '../models/TimeEntry.js';
 import TeamMember from '../models/TeamMember.js';
+import mongoose from 'mongoose';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import { assertCurrentUserIsAssignee } from '../utils/taskAssigneeAccess.js';
 
 const PROJECT_STATUSES = ['planning', 'active', 'on_hold', 'completed', 'cancelled'];
 const TASK_STATUSES = ['todo', 'in_progress', 'done'];
@@ -58,6 +60,60 @@ function buildWeeklySeries(rows, dateField, valueField, weeks = 4) {
   }));
 }
 
+function dayKey(date) {
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+/** GitHub-style daily contribution buckets for the last `days` calendar days. */
+function buildDailyContributionSeries(taskRows, timeRows, days = 371) {
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+
+  const map = new Map();
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const key = dayKey(d);
+    map.set(key, { date: key, hours: 0, tasks: 0, count: 0 });
+  }
+
+  for (const row of timeRows || []) {
+    const key = dayKey(row.date);
+    if (!key || !map.has(key)) continue;
+    const bucket = map.get(key);
+    const hours = Number(row.hours || 0);
+    bucket.hours += hours;
+    if (hours > 0) bucket.count += 1;
+  }
+
+  for (const row of taskRows || []) {
+    const key = dayKey(row.completedAt);
+    if (!key || !map.has(key)) continue;
+    const bucket = map.get(key);
+    bucket.tasks += 1;
+    bucket.count += 1;
+  }
+
+  return [...map.values()].map((bucket) => {
+    const hours = Math.round(bucket.hours * 100) / 100;
+    const intensity = hours * 2 + bucket.tasks;
+    let level = 0;
+    if (intensity > 0 && intensity < 1) level = 1;
+    else if (intensity >= 1 && intensity < 3) level = 2;
+    else if (intensity >= 3 && intensity < 6) level = 3;
+    else if (intensity >= 6) level = 4;
+    return {
+      date: bucket.date,
+      hours,
+      tasks: bucket.tasks,
+      count: bucket.count,
+      level,
+    };
+  });
+}
+
 async function findProject(req, projectId) {
   return Project.findOne(buildListQuery(req, { _id: projectId }));
 }
@@ -91,25 +147,83 @@ export const getProjectsSummary = async (req, res) => {
     const scope = buildListQuery(req);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const contributionProjectId = req.query.projectId;
 
-    const [projects, overdueMilestones, openTasks, completedTasks, timeEntries] = await Promise.all([
-      Project.find(scope).select('_id status').lean(),
-      ProjectMilestone.countDocuments({
-        ...scope,
-        status: { $ne: 'completed' },
-        dueDate: { $lt: today },
-      }),
-      ProjectTask.countDocuments({ ...scope, status: { $ne: 'done' } }),
-      ProjectTask.find({ ...scope, status: 'done', completedAt: { $ne: null } })
-        .select('completedAt')
-        .lean(),
-      TimeEntry.find(scope).select('date hours').lean(),
-    ]);
+    const [projects, overdueMilestones, openTasks, completedTasks, timeEntries, openTaskByProject] =
+      await Promise.all([
+        Project.find(scope)
+          .populate('leadMemberId', 'name email jobTitle department')
+          .select('name status priority startDate targetEndDate clientName leadMemberId updatedAt')
+          .lean(),
+        ProjectMilestone.countDocuments({
+          ...scope,
+          status: { $ne: 'completed' },
+          dueDate: { $lt: today },
+        }),
+        ProjectTask.countDocuments({ ...scope, status: { $ne: 'done' } }),
+        ProjectTask.find({ ...scope, status: 'done', completedAt: { $ne: null } })
+          .select('completedAt projectId')
+          .lean(),
+        TimeEntry.find(scope).select('date hours projectId').lean(),
+        ProjectTask.aggregate([
+          { $match: { ...scope, status: { $ne: 'done' } } },
+          { $group: { _id: '$projectId', count: { $sum: 1 } } },
+        ]),
+      ]);
 
     const byStatus = { planning: 0, active: 0, on_hold: 0, completed: 0, cancelled: 0 };
     for (const row of projects) {
       if (row.status in byStatus) byStatus[row.status] += 1;
     }
+
+    const openTaskMap = new Map(
+      openTaskByProject.map((row) => [String(row._id), row.count]),
+    );
+
+    const needsWorkStatuses = new Set(['planning', 'active', 'on_hold']);
+    const workQueue = projects
+      .filter((row) => needsWorkStatuses.has(row.status))
+      .map((row) => ({
+        _id: String(row._id),
+        name: row.name,
+        status: row.status,
+        priority: row.priority || 'medium',
+        startDate: row.startDate || null,
+        targetEndDate: row.targetEndDate || null,
+        clientName: row.clientName || '',
+        leadName:
+          row.leadMemberId && typeof row.leadMemberId === 'object'
+            ? row.leadMemberId.name || ''
+            : '',
+        openTasks: openTaskMap.get(String(row._id)) || 0,
+        updatedAt: row.updatedAt || null,
+      }))
+      .sort((a, b) => {
+        const aEnd = a.targetEndDate ? new Date(a.targetEndDate).getTime() : Number.MAX_SAFE_INTEGER;
+        const bEnd = b.targetEndDate ? new Date(b.targetEndDate).getTime() : Number.MAX_SAFE_INTEGER;
+        if (aEnd !== bEnd) return aEnd - bEnd;
+        return String(a.name).localeCompare(String(b.name));
+      });
+
+    const activeProjectIds = workQueue.map((row) => row._id);
+    let graphProjectId =
+      contributionProjectId && activeProjectIds.includes(String(contributionProjectId))
+        ? String(contributionProjectId)
+        : workQueue[0]?._id || (projects[0] ? String(projects[0]._id) : null);
+
+    if (contributionProjectId && mongoose.Types.ObjectId.isValid(contributionProjectId)) {
+      const exists = projects.some((row) => String(row._id) === String(contributionProjectId));
+      if (exists) graphProjectId = String(contributionProjectId);
+    }
+
+    const taskRowsForGraph = graphProjectId
+      ? completedTasks.filter((row) => String(row.projectId) === graphProjectId)
+      : completedTasks;
+    const timeRowsForGraph = graphProjectId
+      ? timeEntries.filter((row) => String(row.projectId) === graphProjectId)
+      : timeEntries;
+
+    const graphProject = projects.find((row) => String(row._id) === graphProjectId);
 
     res.json({
       data: {
@@ -119,6 +233,17 @@ export const getProjectsSummary = async (req, res) => {
         openTasks,
         tasksCompletedWeekly: buildWeeklySeries(completedTasks, 'completedAt'),
         hoursLoggedWeekly: buildWeeklySeries(timeEntries, 'date', 'hours'),
+        workQueue,
+        projectOptions: projects.map((row) => ({
+          _id: String(row._id),
+          name: row.name,
+          status: row.status,
+        })),
+        contributionGraph: {
+          projectId: graphProjectId,
+          projectName: graphProject?.name || null,
+          days: buildDailyContributionSeries(taskRowsForGraph, timeRowsForGraph),
+        },
       },
     });
   } catch (error) {
@@ -158,7 +283,9 @@ export const getProjectProfile = async (req, res) => {
       ProjectTask.find(scope)
         .populate('assigneeId', 'name email jobTitle department')
         .sort({ sortOrder: 1, status: 1, dueDate: 1 }),
-      ProjectMember.find(scope)
+      // List by project only — project already passed scope check. Avoid hiding rows
+      // that share projectId+teamMemberId but have a mismatched workspaceId/userId.
+      ProjectMember.find({ projectId: project._id })
         .populate('teamMemberId', 'name email jobTitle department')
         .sort({ role: 1, createdAt: 1 }),
       TimeEntry.find(scope)
@@ -232,12 +359,19 @@ export const createProject = async (req, res) => {
     });
 
     if (leadMemberId) {
-      await ProjectMember.create({
-        ...scope,
-        projectId: project._id,
-        teamMemberId: leadMemberId,
-        role: 'lead',
-      });
+      try {
+        await ProjectMember.create({
+          ...scope,
+          projectId: project._id,
+          teamMemberId: leadMemberId,
+          role: 'lead',
+        });
+      } catch (memberError) {
+        // Project is already created — don't fail the whole request if lead membership upsert races.
+        if (memberError?.code !== 11000) {
+          console.error('Error adding project lead member:', memberError);
+        }
+      }
     }
 
     const populated = await Project.findById(project._id).populate(
@@ -296,6 +430,34 @@ export const updateProject = async (req, res) => {
     }
 
     await project.save();
+
+    if (req.body.leadMemberId) {
+      const scope = buildCreateScope(req);
+      const existingLead = await ProjectMember.findOne({
+        projectId: project._id,
+        teamMemberId: req.body.leadMemberId,
+      });
+      if (existingLead) {
+        existingLead.role = 'lead';
+        existingLead.workspaceId = scope.workspaceId ?? null;
+        existingLead.userId = scope.userId;
+        await existingLead.save();
+      } else {
+        try {
+          await ProjectMember.create({
+            ...scope,
+            projectId: project._id,
+            teamMemberId: req.body.leadMemberId,
+            role: 'lead',
+          });
+        } catch (memberError) {
+          if (memberError?.code !== 11000) {
+            console.error('Error syncing project lead member:', memberError);
+          }
+        }
+      }
+    }
+
     const populated = await Project.findById(project._id).populate(
       'leadMemberId',
       'name email jobTitle department',
@@ -466,6 +628,16 @@ export const updateProjectTask = async (req, res) => {
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
     const prevStatus = task.status;
+    const nextStatus = req.body.status;
+    const statusChanging =
+      nextStatus !== undefined &&
+      TASK_STATUSES.includes(nextStatus) &&
+      String(nextStatus) !== String(prevStatus);
+
+    if (statusChanging) {
+      await assertCurrentUserIsAssignee(req, task.assigneeId);
+    }
+
     const fields = [
       'title',
       'description',
@@ -557,14 +729,44 @@ export const addProjectMember = async (req, res) => {
     if (!member) return res.status(400).json({ error: 'Invalid team member' });
 
     const scope = buildCreateScope(req);
-    const existing = await ProjectMember.findOne({ ...scope, projectId: project._id, teamMemberId });
-    if (existing) return res.status(400).json({ error: 'Member already on project' });
+    const nextRole = ['lead', 'member', 'viewer'].includes(role) ? role : 'member';
 
-    const projectMember = await ProjectMember.create({
+    // Unique index is projectId+teamMemberId (not scoped). Find globally so we can
+    // repair workspace/user scope and return the row instead of failing with "already on project"
+    // while the profile list (scoped) stays empty.
+    let projectMember = await ProjectMember.findOne({ projectId: project._id, teamMemberId });
+    if (projectMember) {
+      const scopeWs = scope.workspaceId ? String(scope.workspaceId) : '';
+      const rowWs = projectMember.workspaceId ? String(projectMember.workspaceId) : '';
+      const scopeUser = String(scope.userId);
+      const rowUser = String(projectMember.userId || '');
+      let dirty = false;
+      if (scopeWs !== rowWs) {
+        projectMember.workspaceId = scope.workspaceId ?? null;
+        dirty = true;
+      }
+      if (scopeUser !== rowUser) {
+        projectMember.userId = scope.userId;
+        dirty = true;
+      }
+      if (role && projectMember.role !== nextRole) {
+        projectMember.role = nextRole;
+        dirty = true;
+      }
+      if (dirty) await projectMember.save();
+
+      const populated = await ProjectMember.findById(projectMember._id).populate(
+        'teamMemberId',
+        'name email jobTitle department',
+      );
+      return res.status(200).json({ data: populated });
+    }
+
+    projectMember = await ProjectMember.create({
       ...scope,
       projectId: project._id,
       teamMemberId,
-      role: ['lead', 'member', 'viewer'].includes(role) ? role : 'member',
+      role: nextRole,
     });
 
     const populated = await ProjectMember.findById(projectMember._id).populate(
@@ -574,6 +776,14 @@ export const addProjectMember = async (req, res) => {
     res.status(201).json({ data: populated });
   } catch (error) {
     console.error('Error adding project member:', error);
+    if (error?.code === 11000) {
+      const existing = await ProjectMember.findOne({
+        projectId: req.params.projectId,
+        teamMemberId: req.body?.teamMemberId,
+      }).populate('teamMemberId', 'name email jobTitle department');
+      if (existing) return res.status(200).json({ data: existing });
+      return res.status(400).json({ error: 'Member already on project' });
+    }
     handleScopeError(res, error);
   }
 };

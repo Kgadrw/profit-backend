@@ -25,7 +25,7 @@ const checkSmtpConfig = () => {
   const hasPassword = !!process.env.SMTP_PASSWORD;
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = process.env.SMTP_PORT || '587';
-  
+
   if (hasUser && hasPassword) {
     console.log('✅ Email service: SMTP configuration found');
     console.log(`   Host: ${host}, Port: ${port}, User: ${process.env.SMTP_USER}`);
@@ -37,16 +37,11 @@ const checkSmtpConfig = () => {
   }
 };
 
-// Check configuration on module load
 checkSmtpConfig();
 
-// Create transporter (configure with your SMTP settings)
 const createTransporter = () => {
-  // For Gmail, you'll need to use an App Password
-  // For other providers, adjust settings accordingly
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = parseInt(process.env.SMTP_PORT || '587');
-  // SMTP_SECURE should be 'true' for port 465, 'false' for port 587
   const secure = process.env.SMTP_SECURE === 'true' || process.env.SMTP_SECURE === true;
   const user = process.env.SMTP_USER;
   const password = process.env.SMTP_PASSWORD;
@@ -58,15 +53,14 @@ const createTransporter = () => {
   const transporter = nodemailer.createTransport({
     host,
     port,
-    secure, // true for 465, false for other ports
+    secure,
     auth: {
       user,
-      pass: password, // Use App Password for Gmail
+      pass: password,
     },
   });
 
-  // Verify connection configuration (async, but don't wait)
-  transporter.verify((error, success) => {
+  transporter.verify((error) => {
     if (error) {
       console.error('❌ SMTP connection verification failed:', error.message);
       console.error('   Please check your SMTP credentials in .env file');
@@ -78,51 +72,81 @@ const createTransporter = () => {
   return transporter;
 };
 
-// Generate email header with company logo, name, and sender info
-export const generateEmailHeader = (senderUser) => {
-  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
-  const companyLogo = process.env.COMPANY_LOGO_URL || 'https://trippo.rw/logo.png';
-  const senderName = senderUser?.name || 'Unknown';
-  const senderEmail = senderUser?.email || '';
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
-  return `
-    <div style="background-color: #ffffff; padding: 15px 20px; text-align: left; border-bottom: 1px solid #e2e8f0;">
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <img 
-          src="${companyLogo}" 
-          alt="${companyName} Logo" 
-          width="40" 
-          height="40"
-          style="width: 40px; height: 40px; display: block; border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; vertical-align: middle;" 
-        />
-        <h1 style="color: #1e293b; margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.3px; line-height: 40px; vertical-align: middle;">${companyName}</h1>
-      </div>
-    </div>
-    <div style="background-color: #f8fafc; padding: 12px 20px; border-bottom: 1px solid #e2e8f0;">
-      <div style="background-color: #ffffff; padding: 10px 12px;">
-        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-          <span style="color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Message From:</span>
-          <span style="color: #1e293b; font-size: 13px; font-weight: 600;">${senderName}</span>
-          ${senderEmail ? `<span style="color: #64748b; font-size: 12px; margin-left: 4px;">${senderEmail}</span>` : ''}
-        </div>
-      </div>
-    </div>
-  `;
+function displayCompanyName(senderUser) {
+  return senderUser?.businessName || senderUser?.name || '';
+}
+
+/** Plain sender line — no logo, no colored header blocks. */
+export const generateEmailHeader = (senderUser) => {
+  const companyName = displayCompanyName(senderUser);
+  const senderName = senderUser?.name || '';
+  const senderEmail = senderUser?.email || '';
+  const fromLine = [companyName || senderName, senderEmail].filter(Boolean).join(' · ');
+  if (!fromLine) return '';
+  return `<p style="margin:0 0 20px 0;font-size:13px;line-height:1.5;color:#333;">From: ${escapeHtml(fromLine)}</p>`;
 };
 
 const emailSignature = (senderUser) => {
-  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
-  return `<p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">${companyName}</p>`;
+  const companyName = displayCompanyName(senderUser);
+  if (!companyName) return '';
+  return `<p style="margin:0;font-size:15px;line-height:1.5;color:#111;">${escapeHtml(companyName)}</p>`;
 };
 
-// Send email function
-// Uses platform SMTP credentials, but can show the business name in the From header.
-// replyToEmail lets recipients reply directly to the business owner.
+/** Clear message email — white background, no colored boxes, no logo. */
+function plainEmailHtml({ greeting, paragraphs = [], closing, senderUser }) {
+  const body = paragraphs
+    .filter(Boolean)
+    .map(
+      (p) =>
+        `<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#111;">${p}</p>`,
+    )
+    .join('');
+
+  const signature = emailSignature(senderUser);
+  const footer =
+    closing || signature
+      ? `<p style="margin:24px 0 4px 0;font-size:14px;line-height:1.5;color:#111;">${closing || 'Best regards,'}</p>${signature}`
+      : '';
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <div style="max-width:560px;margin:0 auto;padding:28px 20px;color:#111;">
+    ${generateEmailHeader(senderUser)}
+    ${greeting ? `<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#111;">${greeting}</p>` : ''}
+    ${body}
+    ${footer}
+  </div>
+</body>
+</html>`;
+}
+
+function formatDueDate(dateValue) {
+  return new Date(dateValue).toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
 export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail, replyToEmail }) => {
   try {
     const hasSmtpUser = !!process.env.SMTP_USER;
     const hasSmtpPassword = !!process.env.SMTP_PASSWORD;
-    
+
     if (!hasSmtpUser || !hasSmtpPassword) {
       console.warn('Email service not configured. Skipping email send.');
       console.warn('SMTP_USER exists:', hasSmtpUser);
@@ -133,7 +157,7 @@ export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail, 
 
     const transporter = createTransporter();
     const smtpUser = process.env.SMTP_USER;
-    const displayName = fromName || process.env.SMTP_FROM_NAME || 'Trippo';
+    const displayName = fromName || process.env.SMTP_FROM_NAME || 'Notifications';
     const replyTo = replyToEmail || fromEmail || process.env.SMTP_REPLY_TO || smtpUser;
 
     const mailOptions = {
@@ -143,9 +167,6 @@ export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail, 
       text,
       html,
       replyTo,
-      headers: {
-        'X-Mailer': 'Trippo Email Service',
-      },
     };
 
     const info = await transporter.sendMail(mailOptions);
@@ -157,146 +178,92 @@ export const sendEmail = async ({ to, subject, text, html, fromName, fromEmail, 
   }
 };
 
-// Send schedule notification to user
 export const sendUserScheduleNotification = async (user, schedule, senderUser) => {
-  const message = schedule.userNotificationMessage || 
+  const message =
+    schedule.userNotificationMessage ||
     `Reminder: ${schedule.title} is due on ${new Date(schedule.dueDate).toLocaleDateString()}`;
 
-  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
-  const senderName = senderUser?.name || 'Unknown';
-  const senderEmail = senderUser?.email || '';
+  const sender = senderUser || user;
+  const companyName = displayCompanyName(sender) || 'Notifications';
+  const senderEmail = sender?.email || '';
+  const dueText = formatDueDate(schedule.dueDate);
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-        <tr>
-          <td style="padding: 40px 20px;">
-            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-              ${generateEmailHeader(senderUser || user)}
-              <tr>
-                <td style="padding: 30px;">
-                  <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">Schedule Reminder</h2>
-                  <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
-                  
-                  <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 20px; border-radius: 6px; margin: 20px 0;">
-                    <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; font-weight: 500;">${message}</p>
-                  </div>
-                  
-                  ${schedule.description ? `
-                    <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #64748b; margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Details</p>
-                      <p style="color: #1e293b; margin: 0; font-size: 15px; line-height: 1.6;">${schedule.description}</p>
-                    </div>
-                  ` : ''}
-                  
-                  <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                    ${schedule.amount ? `<p style="color: #1e293b; margin: 0 0 10px 0; font-size: 15px;"><strong style="color: #64748b;">Amount:</strong> <span style="font-size: 18px; font-weight: 600; color: #2563eb;">${schedule.amount.toLocaleString()} RWF</span></p>` : ''}
-                    <p style="color: #1e293b; margin: 0; font-size: 15px;"><strong style="color: #64748b;">Due Date:</strong> ${new Date(schedule.dueDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
-                  </div>
-                  
-                  <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    ${emailSignature(senderUser || user)}
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-  `;
+  const paragraphs = [
+    escapeHtml(message),
+    schedule.description ? escapeHtml(schedule.description) : '',
+    schedule.amount ? `Amount: ${Number(schedule.amount).toLocaleString()} RWF` : '',
+    `Due date: ${escapeHtml(dueText)}`,
+  ];
+
+  const textParts = [
+    `Hello ${user.name},`,
+    '',
+    message,
+    schedule.description || '',
+    schedule.amount ? `Amount: ${Number(schedule.amount).toLocaleString()} RWF` : '',
+    `Due date: ${dueText}`,
+  ].filter(Boolean);
 
   return await sendEmail({
     to: user.email,
     subject: `Reminder: ${schedule.title}`,
-    text: message,
-    html,
+    text: textParts.join('\n'),
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(user.name)},`,
+      paragraphs,
+      closing: 'Best regards,',
+      senderUser: sender,
+    }),
     fromName: companyName,
     replyToEmail: senderEmail || undefined,
   });
 };
 
-// Send schedule notification to client
 export const sendClientScheduleNotification = async (client, schedule, senderUser) => {
   if (!client.email) {
     return { success: false, message: 'Client does not have an email address' };
   }
 
-  const message = schedule.clientNotificationMessage || 
+  const message =
+    schedule.clientNotificationMessage ||
     `This is a reminder that ${schedule.title} is due on ${new Date(schedule.dueDate).toLocaleDateString()}`;
 
-  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
-  const senderName = senderUser?.name || 'Unknown';
+  const companyName = displayCompanyName(senderUser) || 'Notifications';
   const senderEmail = senderUser?.email || '';
+  const dueText = formatDueDate(schedule.dueDate);
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-        <tr>
-          <td style="padding: 40px 20px;">
-            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-              ${generateEmailHeader(senderUser)}
-              <tr>
-                <td style="padding: 30px;">
-                  <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">Payment Reminder</h2>
-                  <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${client.name},</p>
-                  
-                  <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 20px; border-radius: 6px; margin: 20px 0;">
-                    <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; font-weight: 500;">${message}</p>
-                  </div>
-                  
-                  ${schedule.description ? `
-                    <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #64748b; margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Details</p>
-                      <p style="color: #1e293b; margin: 0; font-size: 15px; line-height: 1.6;">${schedule.description}</p>
-                    </div>
-                  ` : ''}
-                  
-                  <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                    ${schedule.amount ? `<p style="color: #1e293b; margin: 0 0 10px 0; font-size: 15px;"><strong style="color: #92400e;">Amount Due:</strong> <span style="font-size: 18px; font-weight: 600; color: #d97706;">${schedule.amount.toLocaleString()} RWF</span></p>` : ''}
-                    <p style="color: #1e293b; margin: 0; font-size: 15px;"><strong style="color: #92400e;">Due Date:</strong> ${new Date(schedule.dueDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
-                  </div>
-                  
-                  <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Thank you,</p>
-                    ${emailSignature(senderUser)}
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-  `;
+  const paragraphs = [
+    escapeHtml(message),
+    schedule.description ? escapeHtml(schedule.description) : '',
+    schedule.amount ? `Amount due: ${Number(schedule.amount).toLocaleString()} RWF` : '',
+    `Due date: ${escapeHtml(dueText)}`,
+  ];
+
+  const textParts = [
+    `Hello ${client.name},`,
+    '',
+    message,
+    schedule.description || '',
+    schedule.amount ? `Amount due: ${Number(schedule.amount).toLocaleString()} RWF` : '',
+    `Due date: ${dueText}`,
+  ].filter(Boolean);
 
   return await sendEmail({
     to: client.email,
     subject: `Reminder: ${schedule.title}`,
-    text: message,
-    html,
+    text: textParts.join('\n'),
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(client.name)},`,
+      paragraphs,
+      closing: 'Thank you,',
+      senderUser,
+    }),
     fromName: companyName,
     replyToEmail: senderEmail || undefined,
   });
 };
 
-// Send monthly payment reminder to user
-export const sendMonthlyPaymentReminder = async (user, plan, senderUser, context = {}) => {
+export const sendMonthlyPaymentReminder = async (user, plan, senderUser) => {
   if (!user?.email) {
     return { success: false, message: 'User does not have an email address' };
   }
@@ -304,65 +271,37 @@ export const sendMonthlyPaymentReminder = async (user, plan, senderUser, context
   const amount = Number(plan?.amount || 5800);
   const currency = String(plan?.currency || 'RWF');
   const nextDue = plan?.nextDueDate ? new Date(plan.nextDueDate) : null;
-  const dueText = nextDue ? nextDue.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'soon';
+  const dueText = nextDue
+    ? nextDue.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : 'soon';
 
-  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
+  const companyName = displayCompanyName(senderUser || user) || 'Notifications';
   const senderEmail = senderUser?.email || process.env.SMTP_USER;
 
   const subject = `Monthly subscription payment reminder (${amount.toLocaleString()} ${currency})`;
   const message = `Hello ${user.name}, this is a reminder to pay your monthly subscription of ${amount.toLocaleString()} ${currency}. Due date: ${dueText}.`;
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-        <tr>
-          <td style="padding: 40px 20px;">
-            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-              ${generateEmailHeader(senderUser || user)}
-              <tr>
-                <td style="padding: 30px;">
-                  <h2 style="color: #1e293b; margin: 0 0 14px 0; font-size: 22px; font-weight: 600;">Payment Reminder</h2>
-                  <p style="color: #475569; margin: 0 0 18px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
-                  <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 18px; border-radius: 6px; margin: 18px 0;">
-                    <p style="color: #1e293b; margin: 0; font-size: 15px; line-height: 1.8; font-weight: 500;">
-                      Your monthly subscription is <strong>${amount.toLocaleString()} ${currency}</strong>.
-                      ${nextDue ? `The due date is <strong>${dueText}</strong>.` : ''}
-                    </p>
-                  </div>
-                  <p style="color: #64748b; margin: 0; font-size: 13px; line-height: 1.6;">
-                    If you have already paid, you can ignore this reminder.
-                  </p>
-                  <div style="margin-top: 26px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
-                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    ${emailSignature(senderUser || user)}
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-  `;
+  const paragraphs = [
+    `Your monthly subscription is ${amount.toLocaleString()} ${escapeHtml(currency)}.`,
+    nextDue ? `The due date is ${escapeHtml(dueText)}.` : '',
+    'If you have already paid, you can ignore this reminder.',
+  ];
 
   return await sendEmail({
     to: user.email,
     subject,
     text: message,
-    html,
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(user.name)},`,
+      paragraphs,
+      closing: 'Best regards,',
+      senderUser: senderUser || user,
+    }),
     fromName: companyName,
     replyToEmail: senderEmail || undefined,
   });
 };
 
-// Recurring expense payment reminder
 export const sendRecurringExpenseReminder = async (user, recurringExpense, context = {}) => {
   if (!user?.email) {
     return { success: false, message: 'User does not have an email address' };
@@ -370,187 +309,84 @@ export const sendRecurringExpenseReminder = async (user, recurringExpense, conte
 
   const stage = context.stage || 'due';
   const amount = Number(recurringExpense.amount || 0);
-  const dueDate = recurringExpense.nextDueDate
-    ? new Date(recurringExpense.nextDueDate)
-    : null;
-  const dueText = dueDate
-    ? dueDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-    : 'soon';
-
+  const dueDate = recurringExpense.nextDueDate ? new Date(recurringExpense.nextDueDate) : null;
+  const dueText = dueDate ? formatDueDate(recurringExpense.nextDueDate) : 'soon';
   const isDueToday = stage === 'due';
+
   const subject = isDueToday
     ? `Payment pending: ${recurringExpense.title} (${amount.toLocaleString()} RWF)`
     : `Upcoming expense: ${recurringExpense.title} due ${dueText}`;
 
-  const headline = isDueToday ? 'Payment Pending' : 'Upcoming Expense Reminder';
   const message = isDueToday
-    ? `Your recurring expense "${recurringExpense.title}" of ${amount.toLocaleString()} RWF is due today. Please make the payment and record it in Trippo.`
+    ? `Your recurring expense "${recurringExpense.title}" of ${amount.toLocaleString()} RWF is due today. Please make the payment and record it.`
     : `Reminder: your recurring expense "${recurringExpense.title}" of ${amount.toLocaleString()} RWF is due on ${dueText}.`;
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-        <tr>
-          <td style="padding: 40px 20px;">
-            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-              ${generateEmailHeader(user)}
-              <tr>
-                <td style="padding: 30px;">
-                  <h2 style="color: #1e293b; margin: 0 0 14px 0; font-size: 22px; font-weight: 600;">${headline}</h2>
-                  <p style="color: #475569; margin: 0 0 18px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
-                  <div style="background-color: ${isDueToday ? '#fef2f2' : '#eff6ff'}; border-left: 4px solid ${isDueToday ? '#ef4444' : '#2563eb'}; padding: 18px; border-radius: 6px; margin: 18px 0;">
-                    <p style="color: #1e293b; margin: 0 0 10px 0; font-size: 15px; line-height: 1.8; font-weight: 500;">${message}</p>
-                    <p style="color: #1e293b; margin: 0; font-size: 15px;"><strong>Amount:</strong> ${amount.toLocaleString()} RWF</p>
-                    ${dueDate ? `<p style="color: #1e293b; margin: 8px 0 0 0; font-size: 15px;"><strong>Due date:</strong> ${dueText}</p>` : ''}
-                    ${recurringExpense.category ? `<p style="color: #1e293b; margin: 8px 0 0 0; font-size: 15px;"><strong>Category:</strong> ${recurringExpense.category}</p>` : ''}
-                  </div>
-                  <p style="color: #64748b; margin: 0; font-size: 13px; line-height: 1.6;">
-                    ${recurringExpense.autoRecord
-                      ? 'This expense will be recorded automatically in Trippo when due.'
-                      : 'Open Trippo → Expenses and tap "Mark paid" after you complete the payment.'}
-                  </p>
-                  <div style="margin-top: 26px; padding-top: 18px; border-top: 1px solid #e2e8f0;">
-                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    ${emailSignature(user)}
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-  `;
+  const paragraphs = [
+    escapeHtml(message),
+    `Amount: ${amount.toLocaleString()} RWF`,
+    dueDate ? `Due date: ${escapeHtml(dueText)}` : '',
+    recurringExpense.category ? `Category: ${escapeHtml(recurringExpense.category)}` : '',
+    recurringExpense.autoRecord
+      ? 'This expense will be recorded automatically when due.'
+      : 'After you pay, open Expenses and mark it as paid.',
+  ];
 
   return await sendEmail({
     to: user.email,
     subject,
     text: message,
-    html,
-    fromName: user.businessName || user.name || 'Trippo',
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(user.name)},`,
+      paragraphs,
+      closing: 'Best regards,',
+      senderUser: user,
+    }),
+    fromName: displayCompanyName(user) || 'Notifications',
     replyToEmail: user.email || undefined,
   });
 };
 
-// Send completion notification
 export const sendCompletionNotification = async (schedule, senderUser, completionMessage, options = {}) => {
   const { notifyClient = false, notifyUser = false } = options;
-  const companyName = senderUser?.businessName || senderUser?.name || 'Trippo';
-  const senderName = senderUser?.name || 'Unknown';
+  const companyName = displayCompanyName(senderUser) || 'Notifications';
   const senderEmail = senderUser?.email || '';
+  const message =
+    completionMessage || `The schedule "${schedule.title}" has been marked as completed.`;
 
-  const message = completionMessage || `The schedule "${schedule.title}" has been marked as completed.`;
+  const detailParagraphs = [
+    escapeHtml(message),
+    `Schedule: ${escapeHtml(schedule.title)}`,
+    schedule.description ? `Description: ${escapeHtml(schedule.description)}` : '',
+    schedule.amount ? `Amount: ${Number(schedule.amount).toLocaleString()} RWF` : '',
+  ];
 
-  // Send to user if enabled
   if (notifyUser && senderUser?.email) {
-    const userHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-          <tr>
-            <td style="padding: 40px 20px;">
-              <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                ${generateEmailHeader(senderUser)}
-                <tr>
-                  <td style="padding: 30px;">
-                    <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">Schedule Completed</h2>
-                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${senderUser.name},</p>
-                    
-                    <div style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 20px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #1e293b; margin: 0 0 12px 0; font-size: 16px; line-height: 1.8; font-weight: 500;">${message}</p>
-                    </div>
-                    
-                    <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #1e293b; margin: 0 0 8px 0; font-size: 15px;"><strong style="color: #64748b;">Schedule:</strong> ${schedule.title}</p>
-                      ${schedule.description ? `<p style="color: #1e293b; margin: 8px 0; font-size: 15px;"><strong style="color: #64748b;">Description:</strong> ${schedule.description}</p>` : ''}
-                      ${schedule.amount ? `<p style="color: #1e293b; margin: 8px 0 0 0; font-size: 15px;"><strong style="color: #64748b;">Amount:</strong> <span style="font-size: 16px; font-weight: 600; color: #22c55e;">${schedule.amount.toLocaleString()} RWF</span></p>` : ''}
-                    </div>
-                    
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                      <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                      ${emailSignature(senderUser)}
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `;
-
     await sendEmail({
       to: senderUser.email,
       subject: `Schedule Completed: ${schedule.title}`,
       text: message,
-      html: userHtml,
+      html: plainEmailHtml({
+        greeting: `Hello ${escapeHtml(senderUser.name)},`,
+        paragraphs: detailParagraphs,
+        closing: 'Best regards,',
+        senderUser,
+      }),
       fromName: companyName,
       replyToEmail: senderEmail || undefined,
     });
   }
 
-  // Send to client if enabled and client exists
   if (notifyClient && schedule.clientId && schedule.clientId.email) {
-    const clientHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-          <tr>
-            <td style="padding: 40px 20px;">
-              <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                ${generateEmailHeader(senderUser)}
-                <tr>
-                  <td style="padding: 30px;">
-                    <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">Schedule Completed</h2>
-                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${schedule.clientId.name},</p>
-                    
-                    <div style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 20px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; font-weight: 500;">${message}</p>
-                    </div>
-                    
-                    <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #1e293b; margin: 0 0 8px 0; font-size: 15px;"><strong style="color: #64748b;">Schedule:</strong> ${schedule.title}</p>
-                      ${schedule.description ? `<p style="color: #1e293b; margin: 8px 0; font-size: 15px;"><strong style="color: #64748b;">Description:</strong> ${schedule.description}</p>` : ''}
-                      ${schedule.amount ? `<p style="color: #1e293b; margin: 8px 0 0 0; font-size: 15px;"><strong style="color: #64748b;">Amount:</strong> <span style="font-size: 16px; font-weight: 600; color: #22c55e;">${schedule.amount.toLocaleString()} RWF</span></p>` : ''}
-                    </div>
-                    
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                      <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Thank you,</p>
-                      ${emailSignature(senderUser)}
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `;
-
     await sendEmail({
       to: schedule.clientId.email,
       subject: `Schedule Completed: ${schedule.title}`,
       text: message,
-      html: clientHtml,
+      html: plainEmailHtml({
+        greeting: `Hello ${escapeHtml(schedule.clientId.name)},`,
+        paragraphs: detailParagraphs,
+        closing: 'Thank you,',
+        senderUser,
+      }),
       fromName: companyName,
       replyToEmail: senderEmail || undefined,
     });

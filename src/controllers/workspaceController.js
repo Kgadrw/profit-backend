@@ -11,6 +11,8 @@ import {
   WORKSPACE_PAGES,
   normalizePermissions,
 } from '../constants/workspacePermissions.js';
+import { syncTeamMembersFromWorkspace } from '../utils/syncTeamFromWorkspace.js';
+import TeamMember from '../models/TeamMember.js';
 
 function getFrontendBaseUrl() {
   return process.env.FRONTEND_URL || 'http://localhost:8080';
@@ -143,6 +145,15 @@ export const createWorkspace = async (req, res) => {
       role: 'owner',
       permissions: ALL_WORKSPACE_PAGE_KEYS,
     });
+
+    try {
+      await syncTeamMembersFromWorkspace({
+        workspaceId: workspace._id,
+        createdByUserId: userId,
+      });
+    } catch (syncError) {
+      console.error('Workspace create team sync error:', syncError);
+    }
 
     res.status(201).json({
       message: 'Workspace created',
@@ -397,6 +408,15 @@ export const acceptWorkspaceInvite = async (req, res) => {
     invite.status = 'accepted';
     await invite.save();
 
+    try {
+      await syncTeamMembersFromWorkspace({
+        workspaceId: invite.workspaceId,
+        createdByUserId: invite.invitedBy || userId,
+      });
+    } catch (syncError) {
+      console.error('Accept invite team sync error:', syncError);
+    }
+
     const workspace = await Workspace.findById(invite.workspaceId).lean();
 
     res.json({
@@ -472,7 +492,22 @@ export const removeWorkspaceMember = async (req, res) => {
       return res.status(400).json({ error: 'Use leave workspace to remove yourself' });
     }
 
+    const removedUserId = member.userId;
     await member.deleteOne();
+
+    try {
+      await TeamMember.updateMany(
+        {
+          workspaceId,
+          linkedUserId: removedUserId,
+          status: { $ne: 'inactive' },
+        },
+        { $set: { status: 'inactive' } },
+      );
+    } catch (syncError) {
+      console.error('Remove member team deactivate error:', syncError);
+    }
+
     res.json({ message: 'Member removed from workspace' });
   } catch (error) {
     console.error('Remove member error:', error);

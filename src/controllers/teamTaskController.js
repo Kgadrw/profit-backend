@@ -4,6 +4,7 @@ import Notification from '../models/Notification.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
+import { assertCurrentUserIsAssignee } from '../utils/taskAssigneeAccess.js';
 
 const notifyOwnerTaskCompleted = async (ownerId, task, member, completionNote) => {
   try {
@@ -182,6 +183,14 @@ export const updateTeamTask = async (req, res) => {
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
     const prevStatus = task.status;
+    const nextStatus = req.body.status;
+    const statusChanging =
+      nextStatus !== undefined && String(nextStatus).trim() !== String(prevStatus);
+
+    if (statusChanging) {
+      await assertCurrentUserIsAssignee(req, task.assigneeId);
+    }
+
     const fields = [
       'title',
       'description',
@@ -233,6 +242,8 @@ export const completeTeamTask = async (req, res) => {
     assertPageAccess(req, 'team');
     const task = await TeamTask.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    await assertCurrentUserIsAssignee(req, task.assigneeId);
 
     const { completionNote } = req.body;
     const wasDone = task.status === 'done';

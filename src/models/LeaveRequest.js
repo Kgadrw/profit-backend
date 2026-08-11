@@ -59,6 +59,12 @@ const leaveRequestSchema = new mongoose.Schema(
       trim: true,
       maxlength: [500],
     },
+    /** When true, approved/rejected decision is visible to other workspace members. */
+    isPublic: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

@@ -126,12 +126,32 @@ export const validateResetPassword = [
 export const validateForgotPin = validateForgotPassword;
 export const validateResetPin = validateResetPassword;
 
-// User login validation
+// User login validation — accepts password and/or legacy 4-digit PIN
 export const validateLogin = [
   body('password')
+    .optional({ values: 'falsy' })
     .trim()
-    .notEmpty().withMessage('Password is required')
     .isLength({ min: 1 }).withMessage('Password is required'),
+
+  body('pin')
+    .optional({ values: 'falsy' })
+    .trim()
+    .custom((value) => {
+      if (value == null || value === '') return true;
+      if (!/^\d{4}$/.test(String(value))) {
+        throw new Error('PIN must be exactly 4 digits');
+      }
+      return true;
+    }),
+
+  body()
+    .custom((_, { req }) => {
+      const secret = req.body?.password ?? req.body?.pin;
+      if (!secret) {
+        throw new Error('Password or PIN is required');
+      }
+      return true;
+    }),
   
   body('email')
     .optional()
@@ -613,20 +633,27 @@ export const validateRecurringExpense = [
   handleValidationErrors
 ];
 
-// MongoDB ObjectId validation - handles both 'id' and 'userId' parameter names
+// MongoDB ObjectId validation — supports common route param names
 export const validateObjectId = async (req, res, next) => {
-  const id = req.params.id || req.params.userId;
-  
+  const id =
+    req.params.id ||
+    req.params.userId ||
+    req.params.projectId ||
+    req.params.workspaceId ||
+    req.params.memberId ||
+    req.params.taskId ||
+    req.params.milestoneId;
+
   if (!id) {
     return res.status(400).json({ error: 'ID parameter is required' });
   }
-  
+
   // Validate MongoDB ObjectId format (24 hex characters)
   const objectIdRegex = /^[0-9a-fA-F]{24}$/;
   if (!objectIdRegex.test(id)) {
     return res.status(400).json({ error: 'Invalid ID format' });
   }
-  
+
   next();
 };
 

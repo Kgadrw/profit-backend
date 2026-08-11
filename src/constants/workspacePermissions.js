@@ -6,8 +6,8 @@ export const WORKSPACE_PAGES = [
   { key: 'schedules', label: 'Automations', path: '/calendar/schedules' },
   { key: 'calendar', label: 'Calendar', path: '/calendar' },
   { key: 'team', label: 'Team', path: '/team' },
+  { key: 'hr', label: 'HR', path: '/hr' },
   { key: 'projects', label: 'Projects', path: '/projects' },
-  { key: 'crm', label: 'CRM', path: '/crm' },
   { key: 'finance', label: 'Finance', path: '/finance/income' },
   { key: 'reports', label: 'Reports', path: '/reports' },
   { key: 'documents', label: 'Documents', path: '/documents' },
@@ -32,5 +32,19 @@ export function normalizePermissions(permissions, role) {
 
 export function canAccessWorkspacePage(role, permissions, pageKey) {
   if (role === 'owner' || role === 'admin') return true;
-  return normalizePermissions(permissions, role).includes(pageKey);
+  const normalized = normalizePermissions(permissions, role);
+  if (pageKey === 'hr' && normalized.includes('team')) return true;
+  if (pageKey === 'team' && normalized.includes('hr')) return true;
+  if (pageKey === 'projects' && normalized.includes('team')) return true;
+  if (pageKey === 'team' && normalized.includes('projects')) return true;
+  if (pageKey === 'calendar' && normalized.includes('schedules')) return true;
+  if (pageKey === 'schedules' && normalized.includes('calendar')) return true;
+  return normalized.includes(pageKey);
+}
+
+/** Workspace owners/admins, or members explicitly granted the HR permission. */
+export function canReviewLeaveRequests(role, permissions) {
+  if (role === 'owner' || role === 'admin') return true;
+  const normalized = normalizePermissions(permissions, role);
+  return normalized.includes('hr');
 }
