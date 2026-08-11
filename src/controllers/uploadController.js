@@ -10,6 +10,11 @@ import {
   sendStoredFile,
   getStoredChatAttachment,
 } from '../utils/storedFileService.js';
+import {
+  destroyProfileImage,
+  isCloudinaryUrl,
+  uploadProfileImageBuffer,
+} from '../utils/cloudinaryService.js';
 import Workspace from '../models/Workspace.js';
 import WorkspaceDirectConversation from '../models/WorkspaceDirectConversation.js';
 import { parseStoredFileUrl } from '../utils/storedFileService.js';
@@ -212,16 +217,28 @@ export const uploadProfilePicture = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    await deleteStoredFileByUrl(user.profilePictureUrl);
+    // Remove previous Cloudinary + legacy Mongo/disk copies
+    await destroyProfileImage({
+      kind: 'profile',
+      ownerId: userId,
+      url: user.profilePictureUrl,
+    });
+    if (!isCloudinaryUrl(user.profilePictureUrl)) {
+      await deleteStoredFileByUrl(user.profilePictureUrl);
+    }
     await deleteStoredFilesForOwner(userId, 'profile');
 
-    const { url: profilePictureUrl } = await saveStoredFile({
-      userId,
-      kind: 'profile',
+    const uploaded = await uploadProfileImageBuffer({
       buffer: req.file.buffer,
-      originalName: req.file.originalname,
+      kind: 'profile',
+      ownerId: userId,
       mimeType: req.file.mimetype,
     });
+
+    // Cache-bust clients that may still hold an old CDN version
+    const profilePictureUrl = uploaded.version
+      ? `${uploaded.url}${uploaded.url.includes('?') ? '&' : '?'}v=${uploaded.version}`
+      : uploaded.url;
 
     user.profilePictureUrl = profilePictureUrl;
     await user.save();
@@ -233,7 +250,9 @@ export const uploadProfilePicture = async (req, res) => {
     });
   } catch (error) {
     console.error('Error uploading profile picture:', error);
-    res.status(500).json({ error: error.message || 'Failed to upload profile picture' });
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to upload profile picture',
+    });
   }
 };
 
@@ -249,7 +268,14 @@ export const removeProfilePicture = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    await deleteStoredFileByUrl(user.profilePictureUrl);
+    await destroyProfileImage({
+      kind: 'profile',
+      ownerId: userId,
+      url: user.profilePictureUrl,
+    });
+    if (!isCloudinaryUrl(user.profilePictureUrl)) {
+      await deleteStoredFileByUrl(user.profilePictureUrl);
+    }
     await deleteStoredFilesForOwner(userId, 'profile');
     await User.findByIdAndUpdate(userId, { $unset: { profilePictureUrl: 1 } });
     user.profilePictureUrl = undefined;
@@ -343,16 +369,26 @@ export const uploadWorkspaceProfilePicture = async (req, res) => {
       return res.status(404).json({ error: 'Workspace not found' });
     }
 
-    await deleteStoredFileByUrl(workspace.profilePictureUrl);
+    await destroyProfileImage({
+      kind: 'workspace-profile',
+      ownerId: workspaceId,
+      url: workspace.profilePictureUrl,
+    });
+    if (!isCloudinaryUrl(workspace.profilePictureUrl)) {
+      await deleteStoredFileByUrl(workspace.profilePictureUrl);
+    }
     await deleteStoredFilesForOwner(workspaceId, 'workspace-profile');
 
-    const { url: profilePictureUrl } = await saveStoredFile({
-      userId: workspaceId,
-      kind: 'workspace-profile',
+    const uploaded = await uploadProfileImageBuffer({
       buffer: req.file.buffer,
-      originalName: req.file.originalname,
+      kind: 'workspace-profile',
+      ownerId: workspaceId,
       mimeType: req.file.mimetype,
     });
+
+    const profilePictureUrl = uploaded.version
+      ? `${uploaded.url}${uploaded.url.includes('?') ? '&' : '?'}v=${uploaded.version}`
+      : uploaded.url;
 
     workspace.profilePictureUrl = profilePictureUrl;
     await workspace.save();
@@ -393,7 +429,14 @@ export const removeWorkspaceProfilePicture = async (req, res) => {
       return res.status(404).json({ error: 'Workspace not found' });
     }
 
-    await deleteStoredFileByUrl(workspace.profilePictureUrl);
+    await destroyProfileImage({
+      kind: 'workspace-profile',
+      ownerId: workspaceId,
+      url: workspace.profilePictureUrl,
+    });
+    if (!isCloudinaryUrl(workspace.profilePictureUrl)) {
+      await deleteStoredFileByUrl(workspace.profilePictureUrl);
+    }
     await deleteStoredFilesForOwner(workspaceId, 'workspace-profile');
     workspace.profilePictureUrl = undefined;
     await workspace.save();
