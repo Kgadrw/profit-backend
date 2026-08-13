@@ -402,6 +402,10 @@ export const validateExpense = [
     .notEmpty().withMessage('Expense amount is required')
     .isFloat({ min: 0 }).withMessage('Expense amount must be a non-negative number'),
 
+  body('quantity')
+    .optional({ nullable: true })
+    .isFloat({ min: 0.0001 }).withMessage('Quantity must be greater than zero'),
+
   body('category')
     .optional()
     .trim()

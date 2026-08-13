@@ -14,6 +14,11 @@ const expenseSchema = new mongoose.Schema(
       required: [true, 'Expense amount is required'],
       min: [0, 'Expense amount must be non-negative'],
     },
+    quantity: {
+      type: Number,
+      min: [0.0001, 'Quantity must be greater than zero'],
+      default: 1,
+    },
     category: {
       type: String,
       trim: true,

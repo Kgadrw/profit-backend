@@ -89,7 +89,7 @@ export const createExpense = async (req, res) => {
       return res.status(403).json({ error: 'Admin cannot create expenses' });
     }
 
-    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId, creditedAccountId } = req.body;
+    const { title, amount, quantity, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId, creditedAccountId } = req.body;
 
     let vendorName;
     let resolvedVendorId;
@@ -102,10 +102,14 @@ export const createExpense = async (req, res) => {
     }
 
     const approvalStatus = getInitialApprovalStatus(req);
+    const parsedQuantity = quantity === undefined || quantity === null || quantity === ''
+      ? 1
+      : Number(quantity);
 
     const expense = new Expense({
       title: title?.trim(),
       amount: Number(amount),
+      quantity: Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1,
       category: category ? category.trim() : 'general',
       date: normalizeExpenseDate(date),
       note: note ? note.trim() : undefined,
@@ -143,7 +147,7 @@ export const updateExpense = async (req, res) => {
       return res.status(403).json({ error: 'Admin cannot update expenses' });
     }
 
-    const { title, amount, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId, creditedAccountId } = req.body;
+    const { title, amount, quantity, category, date, note, paymentMethod, bankAccountName, bankAccountNumber, receiptUrl, receiptFileName, vendorId, accountId, creditedAccountId } = req.body;
     const expense = await Expense.findOne(buildListQuery(req, { _id: req.params.id }));
 
     if (!expense) {
@@ -156,6 +160,10 @@ export const updateExpense = async (req, res) => {
 
     if (title !== undefined) expense.title = title?.trim();
     if (amount !== undefined) expense.amount = Number(amount);
+    if (quantity !== undefined) {
+      const parsedQuantity = Number(quantity);
+      expense.quantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1;
+    }
     if (category !== undefined) expense.category = category ? category.trim() : 'general';
     if (date !== undefined) expense.date = normalizeExpenseDate(date);
     if (note !== undefined) expense.note = note ? note.trim() : undefined;
