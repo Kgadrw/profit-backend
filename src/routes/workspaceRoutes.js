@@ -18,6 +18,9 @@ import {
   markWorkspaceMessagesRead,
   editWorkspaceMessage,
   deleteWorkspaceMessage,
+  getGroupChatSettings,
+  updateGroupChatDisappearing,
+  uploadWorkspaceChatAttachment,
 } from '../controllers/workspaceMessageController.js';
 import {
   listDirectChatThreads,
@@ -31,6 +34,9 @@ import {
   uploadDirectChatAttachment,
   getChatUnreadSummary,
   getAllChatUnreadSummary,
+  getDirectChatInfo,
+  updateDirectChatDisappearing,
+  updateChatNickname,
 } from '../controllers/workspaceDirectChatController.js';
 import {
   profileUpload,
@@ -52,6 +58,7 @@ router.get('/', listWorkspaces);
 router.post('/', createWorkspace);
 router.get('/inbox/direct-chats', listAllDirectChatThreads);
 router.get('/inbox/chat-unread-summary', getAllChatUnreadSummary);
+router.patch('/chat-nicknames/:peerUserId', updateChatNickname);
 router.patch('/:workspaceId', updateWorkspace);
 router.post(
   '/:workspaceId/profile-picture',
@@ -63,7 +70,14 @@ router.get('/:workspaceId/members', getWorkspaceMembers);
 router.get('/:workspaceId/messages', getWorkspaceMessages);
 router.post('/:workspaceId/messages', sendWorkspaceMessage);
 router.post('/:workspaceId/messages/read', markWorkspaceMessagesRead);
+router.post(
+  '/:workspaceId/messages/attachments',
+  chatAttachmentUpload.single('file'),
+  uploadWorkspaceChatAttachment,
+);
 router.get('/:workspaceId/chat-unread-summary', getChatUnreadSummary);
+router.get('/:workspaceId/group-chat/settings', getGroupChatSettings);
+router.patch('/:workspaceId/group-chat/disappearing', updateGroupChatDisappearing);
 router.patch('/:workspaceId/messages/:messageId', editWorkspaceMessage);
 router.delete('/:workspaceId/messages/:messageId', deleteWorkspaceMessage);
 router.get('/:workspaceId/direct-chats', listDirectChatThreads);
@@ -73,6 +87,8 @@ router.post('/:workspaceId/direct-chats/:conversationId/messages', sendDirectCha
 router.patch('/:workspaceId/direct-chats/:conversationId/messages/:messageId', editDirectChatMessage);
 router.delete('/:workspaceId/direct-chats/:conversationId/messages/:messageId', deleteDirectChatMessage);
 router.post('/:workspaceId/direct-chats/:conversationId/read', markDirectChatMessagesRead);
+router.get('/:workspaceId/direct-chats/:conversationId/info', getDirectChatInfo);
+router.patch('/:workspaceId/direct-chats/:conversationId/disappearing', updateDirectChatDisappearing);
 router.post(
   '/:workspaceId/direct-chats/:conversationId/attachments',
   chatAttachmentUpload.single('file'),

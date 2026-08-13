@@ -108,6 +108,22 @@ const workspaceDirectMessageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    /** System notice in the timeline (e.g. disappearing-messages change). */
+    systemType: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    systemPayload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    /** When set, message is purged after this time (disappearing messages). */
+    expiresAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
     unreadEmailRemindedUserIds: [
       {
         type: mongoose.Schema.Types.ObjectId,

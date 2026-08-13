@@ -43,6 +43,12 @@ const workspaceDirectConversationSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    /** Disappearing messages timer in seconds. 0 / null = off. */
+    disappearingDurationSec: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { timestamps: true },
 );

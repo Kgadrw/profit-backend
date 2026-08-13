@@ -6,6 +6,46 @@ import User from '../models/User.js';
 import { broadcastToWorkspace } from '../utils/workspaceRealtime.js';
 import { notifyWorkspaceChatPush } from '../utils/pushNotifications.js';
 import { notifyWorkspaceGroupMessageRecipients } from '../utils/chatNotifications.js';
+import { saveStoredFile } from '../utils/storedFileService.js';
+import {
+  isAllowedDisappearingDuration,
+} from '../utils/disappearingMessages.js';
+
+/** Synthetic conversation scope for group-chat file storage (must be a valid ObjectId). */
+const GROUP_ATTACHMENT_SCOPE = (workspaceId) => String(workspaceId);
+
+function normalizeWaveform(raw) {
+  if (!Array.isArray(raw)) return undefined;
+  const peaks = raw
+    .slice(0, 64)
+    .map((value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.min(1, n));
+    });
+  return peaks.length ? peaks : undefined;
+}
+
+function normalizeAttachments(rawAttachments) {
+  if (!Array.isArray(rawAttachments)) return [];
+  return rawAttachments
+    .slice(0, 5)
+    .map((item) => {
+      const durationRaw = Number(item?.duration);
+      const duration =
+        Number.isFinite(durationRaw) && durationRaw > 0 ? Math.min(durationRaw, 3600) : undefined;
+      const waveform = normalizeWaveform(item?.waveform);
+      return {
+        url: String(item?.url || '').trim(),
+        fileName: String(item?.fileName || '').trim(),
+        mimeType: String(item?.mimeType || 'application/octet-stream').trim(),
+        size: Number(item?.size) || 0,
+        ...(duration != null ? { duration } : {}),
+        ...(waveform ? { waveform } : {}),
+      };
+    })
+    .filter((item) => item.url && item.fileName);
+}
 
 async function assertWorkspaceMember(workspaceId, userId) {
   const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
@@ -99,6 +139,7 @@ function serializeWorkspaceMessage(message) {
     workspaceId: String(message.workspaceId),
     senderUserId: String(message.senderUserId),
     replyTo,
+    expiresAt: message.expiresAt ? new Date(message.expiresAt).toISOString() : null,
   };
 }
 
@@ -187,7 +228,14 @@ export const getWorkspaceMessages = async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
     const before = req.query.before;
 
-    const query = { workspaceId };
+    const now = new Date();
+    const query = {
+      workspaceId,
+      $and: [
+        { $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }] },
+        { $or: [{ expiresAt: null }, { expiresAt: { $exists: false } }, { expiresAt: { $gt: now } }] },
+      ],
+    };
     if (before) {
       const beforeDate = new Date(before);
       if (!Number.isNaN(beforeDate.getTime())) {
@@ -200,7 +248,7 @@ export const getWorkspaceMessages = async (req, res) => {
       WorkspaceMessage.find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
-        .select('workspaceId senderUserId senderName senderProfilePictureUrl body replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt createdAt')
+        .select('workspaceId senderUserId senderName senderProfilePictureUrl body attachments replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt expiresAt createdAt')
         .lean(),
     ]);
 
@@ -227,15 +275,17 @@ export const getWorkspaceMessages = async (req, res) => {
 export const sendWorkspaceMessage = async (req, res) => {
   try {
     const { workspaceId } = req.params;
-    const { body, replyToMessageId, replyTo: clientReplyTo } = req.body || {};
+    const { body, replyToMessageId, replyTo: clientReplyTo, attachments: rawAttachments } =
+      req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
       return res.status(400).json({ error: 'Invalid workspace id' });
     }
 
     const trimmedBody = String(body || '').trim();
-    if (!trimmedBody) {
-      return res.status(400).json({ error: 'Message is required' });
+    const attachments = normalizeAttachments(rawAttachments);
+    if (!trimmedBody && !attachments.length) {
+      return res.status(400).json({ error: 'Message or attachment is required' });
     }
 
     const user = await User.findById(req.user._id).select('name profilePictureUrl');
@@ -250,8 +300,20 @@ export const sendWorkspaceMessage = async (req, res) => {
       resolveGroupReplyTo(workspaceId, replyToMessageId),
     ]);
 
+    for (const attachment of attachments) {
+      const expectedPrefix = `/api/files/chat-attachments/${workspaceId}/${GROUP_ATTACHMENT_SCOPE(workspaceId)}/`;
+      if (!attachment.url.startsWith(expectedPrefix)) {
+        return res.status(400).json({ error: 'Invalid attachment reference' });
+      }
+    }
+
     const replyTo = normalizeClientReplyTo(clientReplyTo) || resolvedReplyTo;
     const { mentionAll, mentions } = resolveMentionsFromBody(trimmedBody, memberUsers, user._id);
+    const workspace = await Workspace.findById(workspaceId)
+      .select('name')
+      .lean();
+    // Disappearing messages are DM-only (not workspace group chat).
+    const expiresAt = null;
 
     const createData = {
       workspaceId,
@@ -259,10 +321,12 @@ export const sendWorkspaceMessage = async (req, res) => {
       senderName: user.name || 'User',
       senderProfilePictureUrl: user.profilePictureUrl || null,
       body: trimmedBody,
+      attachments,
       mentionAll,
       mentions,
       deliveredTo,
       readBy: [],
+      expiresAt,
     };
     if (replyTo?.messageId) {
       createData.replyTo = {
@@ -289,7 +353,6 @@ export const sendWorkspaceMessage = async (req, res) => {
     }
     await broadcastToWorkspace(workspaceId, 'workspace-chat:message', payload);
 
-    const workspace = await Workspace.findById(workspaceId).select('name').lean();
     void notifyWorkspaceChatPush({
       workspaceId,
       workspaceName: workspace?.name || 'Workspace',
@@ -467,6 +530,7 @@ export const deleteWorkspaceMessage = async (req, res) => {
 
     message.deletedAt = new Date();
     message.body = '';
+    message.attachments = [];
     message.mentionAll = false;
     message.mentions = [];
     await message.save();
@@ -480,3 +544,146 @@ export const deleteWorkspaceMessage = async (req, res) => {
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to delete message' });
   }
 };
+
+export const uploadWorkspaceChatAttachment = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    await assertWorkspaceMember(workspaceId, userId);
+
+    const conversationScope = GROUP_ATTACHMENT_SCOPE(workspaceId);
+    const { url } = await saveStoredFile({
+      userId,
+      kind: 'chat-attachment',
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      workspaceId,
+      conversationId: conversationScope,
+    });
+
+    res.status(201).json({
+      data: {
+        url,
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+      },
+    });
+  } catch (error) {
+    console.error('Upload workspace chat attachment error:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to upload attachment',
+    });
+  }
+};
+
+export const getGroupChatSettings = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const userId = req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+    await assertWorkspaceMember(workspaceId, userId);
+    const workspace = await Workspace.findById(workspaceId)
+      .select('name profilePictureUrl groupDisappearingDurationSec')
+      .lean();
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+    const members = await getWorkspaceMemberUsers(workspaceId);
+    res.json({
+      data: {
+        workspaceId: String(workspaceId),
+        name: workspace.name || 'Workspace',
+        profilePictureUrl: workspace.profilePictureUrl || null,
+        disappearingDurationSec: Number(workspace.groupDisappearingDurationSec) || 0,
+        members: members.map((m) => ({
+          userId: String(m.userId),
+          name: m.userName,
+          profilePictureUrl: m.profilePictureUrl,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Get group chat settings error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load group info' });
+  }
+};
+
+export const updateGroupChatDisappearing = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+    const userId = req.user._id;
+    const durationSec = Number(req.body?.disappearingDurationSec);
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+    if (!isAllowedDisappearingDuration(durationSec)) {
+      return res.status(400).json({ error: 'Invalid disappearing duration' });
+    }
+    await assertWorkspaceMember(workspaceId, userId);
+    await Workspace.updateOne(
+      { _id: workspaceId },
+      { groupDisappearingDurationSec: durationSec },
+    );
+    const payload = {
+      workspaceId: String(workspaceId),
+      disappearingDurationSec: durationSec,
+      updatedByUserId: String(userId),
+    };
+    await broadcastToWorkspace(workspaceId, 'workspace-chat:settings', payload);
+    res.json({ data: payload });
+  } catch (error) {
+    console.error('Update group disappearing error:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to update disappearing messages',
+    });
+  }
+};
+
+export async function purgeExpiredGroupMessages() {
+  const now = new Date();
+  const expired = await WorkspaceMessage.find({
+    expiresAt: { $ne: null, $lte: now },
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+  })
+    .limit(200)
+    .lean();
+
+  if (!expired.length) return 0;
+
+  let purged = 0;
+  for (const message of expired) {
+    await WorkspaceMessage.updateOne(
+      { _id: message._id },
+      {
+        deletedAt: now,
+        body: '',
+        attachments: [],
+        mentionAll: false,
+        mentions: [],
+      },
+    );
+    const payload = serializeWorkspaceMessage({
+      ...message,
+      deletedAt: now,
+      body: '',
+      attachments: [],
+      mentionAll: false,
+      mentions: [],
+    });
+    await broadcastToWorkspace(String(message.workspaceId), 'workspace-chat:delete', payload);
+    purged += 1;
+  }
+  return purged;
+}

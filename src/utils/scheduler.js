@@ -17,6 +17,8 @@ import { getTrialEndsAt, isOnTrial } from './paymentPlanUtils.js';
 import Expense from '../models/Expense.js';
 import { reconcileStuckSubscriptionPayments } from '../controllers/subscriptionController.js';
 import { checkUnreadMessageEmailReminders } from './chatNotifications.js';
+import { purgeExpiredDirectMessages } from '../controllers/workspaceDirectChatController.js';
+import { purgeExpiredGroupMessages } from '../controllers/workspaceMessageController.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -166,6 +168,23 @@ export const startScheduler = () => {
       console.error('Startup subscription payment reconcile failed:', error);
     });
   }, 15000);
+
+  // Purge expired disappearing messages every minute
+  cron.schedule('* * * * *', async () => {
+    try {
+      const [dmPurged, groupPurged] = await Promise.all([
+        purgeExpiredDirectMessages(),
+        purgeExpiredGroupMessages(),
+      ]);
+      if (dmPurged || groupPurged) {
+        console.log(
+          `Purged disappearing messages — DM: ${dmPurged}, group: ${groupPurged}`,
+        );
+      }
+    } catch (error) {
+      console.error('Error purging disappearing messages:', error);
+    }
+  });
 };
 
 const daysBetween = (a, b) => {

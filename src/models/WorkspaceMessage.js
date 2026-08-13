@@ -60,6 +60,16 @@ const workspaceMessageSchema = new mongoose.Schema(
       maxlength: 4000,
       default: '',
     },
+    attachments: [
+      {
+        url: { type: String, required: true, trim: true },
+        fileName: { type: String, required: true, trim: true },
+        mimeType: { type: String, required: true, trim: true },
+        size: { type: Number, min: 0, default: 0 },
+        duration: { type: Number, min: 0, default: undefined },
+        waveform: { type: [Number], default: undefined },
+      },
+    ],
     replyTo: {
       type: replyToSchema,
       default: undefined,
@@ -89,6 +99,11 @@ const workspaceMessageSchema = new mongoose.Schema(
     deletedAt: {
       type: Date,
       default: null,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+      index: true,
     },
     deliveredTo: [
       {

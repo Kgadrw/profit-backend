@@ -44,6 +44,22 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  /** Per-peer chat nicknames shown only to this user. */
+  chatNicknames: [
+    {
+      peerUserId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+      },
+      nickname: {
+        type: String,
+        trim: true,
+        maxlength: 40,
+        required: true,
+      },
+    },
+  ],
   role: {
     type: String,
     enum: ['salon_owner', 'barber'],

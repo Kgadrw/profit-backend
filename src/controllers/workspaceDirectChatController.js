@@ -9,11 +9,16 @@ import { saveStoredFile } from '../utils/storedFileService.js';
 import { notifyDirectMessageRecipient } from '../utils/chatNotifications.js';
 import Workspace from '../models/Workspace.js';
 import WorkspaceMessage from '../models/WorkspaceMessage.js';
+import {
+  isAllowedDisappearingDuration,
+  resolveExpiresAt,
+} from '../utils/disappearingMessages.js';
 
 export const WORKSPACE_DM_MESSAGE_EVENT = 'workspace-dm:message';
 export const WORKSPACE_DM_READ_EVENT = 'workspace-dm:read';
 export const WORKSPACE_DM_EDIT_EVENT = 'workspace-dm:edit';
 export const WORKSPACE_DM_DELETE_EVENT = 'workspace-dm:delete';
+export const WORKSPACE_DM_SETTINGS_EVENT = 'workspace-dm:settings';
 
 async function assertWorkspaceMember(workspaceId, userId) {
   const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
@@ -36,6 +41,46 @@ function getOtherParticipantId(conversation, currentUserId) {
   return other ? String(other) : null;
 }
 
+async function getNicknameMap(userId) {
+  const user = await User.findById(userId).select('chatNicknames').lean();
+  const map = new Map();
+  for (const row of user?.chatNicknames || []) {
+    if (row?.peerUserId && row?.nickname) {
+      map.set(String(row.peerUserId), String(row.nickname).trim());
+    }
+  }
+  return map;
+}
+
+function applyNickname(peer, nicknameMap) {
+  if (!peer?.userId) return peer;
+  const nickname = nicknameMap.get(String(peer.userId));
+  if (!nickname) return { ...peer, nickname: null };
+  return { ...peer, nickname, displayName: nickname };
+}
+
+async function findCommonWorkspaces(userIdA, userIdB) {
+  const [mine, theirs] = await Promise.all([
+    WorkspaceMember.find({ userId: userIdA }).select('workspaceId').lean(),
+    WorkspaceMember.find({ userId: userIdB }).select('workspaceId').lean(),
+  ]);
+  const theirSet = new Set(theirs.map((row) => String(row.workspaceId)));
+  const sharedIds = mine
+    .map((row) => String(row.workspaceId))
+    .filter((id) => theirSet.has(id));
+  if (!sharedIds.length) return [];
+
+  const workspaces = await Workspace.find({ _id: { $in: sharedIds } })
+    .select('name profilePictureUrl')
+    .lean();
+
+  return workspaces.map((ws) => ({
+    workspaceId: String(ws._id),
+    name: ws.name || 'Workspace',
+    profilePictureUrl: ws.profilePictureUrl || null,
+  }));
+}
+
 async function getWorkspacePeers(workspaceId, currentUserId) {
   const members = await WorkspaceMember.find({ workspaceId }).select('userId').lean();
   const peerIds = members
@@ -44,17 +89,25 @@ async function getWorkspacePeers(workspaceId, currentUserId) {
 
   if (!peerIds.length) return [];
 
-  const users = await User.find({ _id: { $in: peerIds } })
-    .select('name email profilePictureUrl lastSeenAt')
-    .lean();
+  const [users, nicknameMap] = await Promise.all([
+    User.find({ _id: { $in: peerIds } })
+      .select('name email profilePictureUrl lastSeenAt')
+      .lean(),
+    getNicknameMap(currentUserId),
+  ]);
 
-  return users.map((user) => ({
-    userId: String(user._id),
-    name: user.name || 'User',
-    email: user.email || '',
-    profilePictureUrl: user.profilePictureUrl || null,
-    lastSeenAt: user.lastSeenAt ? new Date(user.lastSeenAt).toISOString() : null,
-  }));
+  return users.map((user) =>
+    applyNickname(
+      {
+        userId: String(user._id),
+        name: user.name || 'User',
+        email: user.email || '',
+        profilePictureUrl: user.profilePictureUrl || null,
+        lastSeenAt: user.lastSeenAt ? new Date(user.lastSeenAt).toISOString() : null,
+      },
+      nicknameMap,
+    ),
+  );
 }
 
 async function assertConversationAccess(conversationId, workspaceId, userId) {
@@ -141,6 +194,7 @@ async function buildDirectChatThreadsForWorkspace(workspaceId, userId, workspace
           ? String(conversation.lastSenderUserId)
           : null,
         unreadCount,
+        disappearingDurationSec: Number(conversation?.disappearingDurationSec) || 0,
       };
     }),
   );
@@ -257,6 +311,9 @@ function serializeDirectMessage(message, conversationId, workspaceId) {
     workspaceId: String(workspaceId),
     senderUserId: String(message.senderUserId),
     replyTo,
+    systemType: message.systemType || null,
+    systemPayload: message.systemPayload || null,
+    expiresAt: message.expiresAt ? new Date(message.expiresAt).toISOString() : null,
   };
 }
 
@@ -473,19 +530,25 @@ export const openDirectChat = async (req, res) => {
     const otherUser = await User.findById(otherUserId)
       .select('name email profilePictureUrl lastSeenAt')
       .lean();
+    const nicknameMap = await getNicknameMap(userId);
+    const peer = applyNickname(
+      {
+        userId: String(otherUserId),
+        name: otherUser?.name || 'User',
+        email: otherUser?.email || '',
+        profilePictureUrl: otherUser?.profilePictureUrl || null,
+        lastSeenAt: otherUser?.lastSeenAt
+          ? new Date(otherUser.lastSeenAt).toISOString()
+          : null,
+      },
+      nicknameMap,
+    );
 
     res.json({
       data: {
         conversationId: String(conversation._id),
-        otherUser: {
-          userId: String(otherUserId),
-          name: otherUser?.name || 'User',
-          email: otherUser?.email || '',
-          profilePictureUrl: otherUser?.profilePictureUrl || null,
-          lastSeenAt: otherUser?.lastSeenAt
-            ? new Date(otherUser.lastSeenAt).toISOString()
-            : null,
-        },
+        disappearingDurationSec: Number(conversation.disappearingDurationSec) || 0,
+        otherUser: peer,
       },
     });
   } catch (error) {
@@ -509,7 +572,15 @@ export const getDirectChatMessages = async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
     const before = req.query.before;
 
-    const query = { conversationId, workspaceId };
+    const now = new Date();
+    const query = {
+      conversationId,
+      workspaceId,
+      $and: [
+        { $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }] },
+        { $or: [{ expiresAt: null }, { expiresAt: { $exists: false } }, { expiresAt: { $gt: now } }] },
+      ],
+    };
     if (before) {
       const beforeDate = new Date(before);
       if (!Number.isNaN(beforeDate.getTime())) {
@@ -570,6 +641,7 @@ export const sendDirectChatMessage = async (req, res) => {
       }
     }
 
+    const expiresAt = resolveExpiresAt(conversation.disappearingDurationSec);
     const createData = attachReplyToCreateData(
       {
         conversationId,
@@ -580,6 +652,7 @@ export const sendDirectChatMessage = async (req, res) => {
         body: trimmedBody,
         attachments,
         readBy: [],
+        expiresAt,
       },
       replyTo,
     );
@@ -938,3 +1011,217 @@ export const getAllChatUnreadSummary = async (req, res) => {
     });
   }
 };
+
+/** Chat info: peer profile, nickname, disappearing setting, groups in common. */
+export const getDirectChatInfo = async (req, res) => {
+  try {
+    const { workspaceId, conversationId } = req.params;
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+
+    await assertWorkspaceMember(workspaceId, userId);
+    const conversation = await assertConversationAccess(conversationId, workspaceId, userId);
+    const otherUserId = getOtherParticipantId(conversation, userId);
+    if (!otherUserId) {
+      return res.status(404).json({ error: 'Peer not found' });
+    }
+
+    const [otherUser, nicknameMap, commonWorkspaces] = await Promise.all([
+      User.findById(otherUserId).select('name email phone profilePictureUrl lastSeenAt').lean(),
+      getNicknameMap(userId),
+      findCommonWorkspaces(userId, otherUserId),
+    ]);
+
+    const peer = applyNickname(
+      {
+        userId: otherUserId,
+        name: otherUser?.name || 'User',
+        email: otherUser?.email || '',
+        phone: otherUser?.phone || '',
+        profilePictureUrl: otherUser?.profilePictureUrl || null,
+        lastSeenAt: otherUser?.lastSeenAt
+          ? new Date(otherUser.lastSeenAt).toISOString()
+          : null,
+      },
+      nicknameMap,
+    );
+
+    res.json({
+      data: {
+        conversationId: String(conversation._id),
+        workspaceId: String(workspaceId),
+        disappearingDurationSec: Number(conversation.disappearingDurationSec) || 0,
+        otherUser: peer,
+        commonWorkspaces,
+      },
+    });
+  } catch (error) {
+    console.error('Get direct chat info error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load chat info' });
+  }
+};
+
+export const updateDirectChatDisappearing = async (req, res) => {
+  try {
+    const { workspaceId, conversationId } = req.params;
+    const userId = req.user._id;
+    const durationSec = Number(req.body?.disappearingDurationSec);
+
+    if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
+      return res.status(400).json({ error: 'Invalid workspace id' });
+    }
+    if (!isAllowedDisappearingDuration(durationSec)) {
+      return res.status(400).json({ error: 'Invalid disappearing duration' });
+    }
+
+    await assertWorkspaceMember(workspaceId, userId);
+    const conversation = await assertConversationAccess(conversationId, workspaceId, userId);
+
+    await WorkspaceDirectConversation.updateOne(
+      { _id: conversationId },
+      { disappearingDurationSec: durationSec },
+    );
+
+    const actor = await User.findById(userId).select('name profilePictureUrl').lean();
+    const actorName = actor?.name || req.user.name || 'User';
+    const noticeBody =
+      durationSec > 0
+        ? `${actorName} turned on disappearing messages (${durationSec}s).`
+        : `${actorName} turned off disappearing messages.`;
+
+    const notice = await WorkspaceDirectMessage.create({
+      conversationId,
+      workspaceId,
+      senderUserId: userId,
+      senderName: actorName,
+      senderProfilePictureUrl: actor?.profilePictureUrl || null,
+      body: noticeBody,
+      systemType: 'disappearing',
+      systemPayload: { durationSec },
+      readBy: [
+        {
+          userId,
+          userName: actorName,
+          readAt: new Date(),
+        },
+      ],
+    });
+
+    await refreshConversationPreview(conversationId);
+
+    const messagePayload = serializeDirectMessage(
+      notice.toObject ? notice.toObject() : notice,
+      conversationId,
+      workspaceId,
+    );
+    await broadcastToConversation(conversation, WORKSPACE_DM_MESSAGE_EVENT, messagePayload);
+
+    const payload = {
+      workspaceId: String(workspaceId),
+      conversationId: String(conversationId),
+      disappearingDurationSec: durationSec,
+      updatedByUserId: String(userId),
+      updatedByName: actorName,
+    };
+    await broadcastToConversation(conversation, WORKSPACE_DM_SETTINGS_EVENT, payload);
+
+    res.json({ data: { ...payload, notice: messagePayload } });
+  } catch (error) {
+    console.error('Update direct chat disappearing error:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to update disappearing messages',
+    });
+  }
+};
+
+export const updateChatNickname = async (req, res) => {
+  try {
+    const peerUserId = String(req.params.peerUserId || '');
+    const nickname = String(req.body?.nickname || '').trim().slice(0, 40);
+    const userId = req.user._id;
+
+    if (!mongoose.Types.ObjectId.isValid(peerUserId)) {
+      return res.status(400).json({ error: 'Invalid peer user id' });
+    }
+    if (String(peerUserId) === String(userId)) {
+      return res.status(400).json({ error: 'Cannot nickname yourself' });
+    }
+
+    const user = await User.findById(userId).select('chatNicknames');
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    const list = Array.isArray(user.chatNicknames) ? [...user.chatNicknames] : [];
+    const idx = list.findIndex((row) => String(row.peerUserId) === peerUserId);
+    if (!nickname) {
+      if (idx >= 0) list.splice(idx, 1);
+    } else if (idx >= 0) {
+      list[idx].nickname = nickname;
+    } else {
+      list.push({ peerUserId, nickname });
+    }
+    user.chatNicknames = list;
+    await user.save();
+
+    res.json({
+      data: {
+        peerUserId,
+        nickname: nickname || null,
+      },
+    });
+  } catch (error) {
+    console.error('Update chat nickname error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to update nickname' });
+  }
+};
+
+/** Soft-delete expired disappearing DMs and notify participants. */
+export async function purgeExpiredDirectMessages() {
+  const now = new Date();
+  const expired = await WorkspaceDirectMessage.find({
+    expiresAt: { $ne: null, $lte: now },
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+  })
+    .limit(200)
+    .lean();
+
+  if (!expired.length) return 0;
+
+  const conversationCache = new Map();
+  let purged = 0;
+
+  for (const message of expired) {
+    await WorkspaceDirectMessage.updateOne(
+      { _id: message._id },
+      {
+        deletedAt: now,
+        body: '',
+        attachments: [],
+      },
+    );
+
+    const conversationId = String(message.conversationId);
+    let conversation = conversationCache.get(conversationId);
+    if (!conversation) {
+      conversation = await WorkspaceDirectConversation.findById(conversationId).lean();
+      if (conversation) conversationCache.set(conversationId, conversation);
+    }
+
+    if (conversation) {
+      const payload = serializeDirectMessage(
+        { ...message, deletedAt: now, body: '', attachments: [] },
+        conversationId,
+        message.workspaceId,
+      );
+      await broadcastToConversation(conversation, WORKSPACE_DM_DELETE_EVENT, payload);
+      await refreshConversationPreview(conversationId);
+    }
+    purged += 1;
+  }
+
+  return purged;
+}

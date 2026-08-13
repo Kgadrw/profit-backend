@@ -23,6 +23,12 @@ const workspaceSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  /** Group chat disappearing messages timer in seconds. 0 = off. */
+  groupDisappearingDurationSec: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
 }, {
   timestamps: true,
 });
