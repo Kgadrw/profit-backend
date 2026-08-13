@@ -512,6 +512,13 @@ const chatAttachmentExtensions = new Set([
   '.pptx',
   '.txt',
   '.csv',
+  '.webm',
+  '.ogg',
+  '.mp3',
+  '.m4a',
+  '.aac',
+  '.wav',
+  '.mp4',
 ]);
 
 export const chatAttachmentUpload = multer({
@@ -522,7 +529,7 @@ export const chatAttachmentUpload = multer({
     if (chatAttachmentExtensions.has(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('File type not allowed. Use images or documents.'));
+      cb(new Error('File type not allowed. Use images, documents, or audio.'));
     }
   },
 });

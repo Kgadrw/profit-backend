@@ -76,6 +76,10 @@ const workspaceDirectMessageSchema = new mongoose.Schema(
         fileName: { type: String, required: true, trim: true },
         mimeType: { type: String, required: true, trim: true },
         size: { type: Number, min: 0, default: 0 },
+        /** Voice-note length in seconds (MediaRecorder blobs often lack duration metadata). */
+        duration: { type: Number, min: 0, default: undefined },
+        /** Normalized 0–1 peak heights for WhatsApp-style waveform preview. */
+        waveform: { type: [Number], default: undefined },
       },
     ],
     readBy: [

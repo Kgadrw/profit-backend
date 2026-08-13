@@ -39,6 +39,11 @@ const userSchema = new mongoose.Schema({
     trim: true,
     default: undefined,
   },
+  /** Last time the user was present in the app (chat presence). */
+  lastSeenAt: {
+    type: Date,
+    default: null,
+  },
   role: {
     type: String,
     enum: ['salon_owner', 'barber'],

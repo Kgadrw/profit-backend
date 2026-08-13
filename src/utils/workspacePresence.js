@@ -11,6 +11,9 @@ const workspacePresence = new Map();
 const STALE_MS = 60_000;
 const BROADCAST_THROTTLE_MS = 3_000;
 const lastBroadcastAt = new Map();
+/** Throttle DB writes for lastSeenAt. */
+const lastPersistedAt = new Map();
+const PERSIST_THROTTLE_MS = 30_000;
 
 async function assertWorkspaceMember(workspaceId, userId) {
   const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
@@ -25,23 +28,48 @@ async function resolveUserProfile(userId) {
   };
 }
 
+async function persistLastSeen(userId, at = Date.now(), force = false) {
+  const userKey = String(userId);
+  const now = Date.now();
+  const last = lastPersistedAt.get(userKey) || 0;
+  if (!force && now - last < PERSIST_THROTTLE_MS) return;
+  lastPersistedAt.set(userKey, now);
+  try {
+    await User.updateOne(
+      { _id: userId },
+      { $set: { lastSeenAt: new Date(at) } },
+    );
+  } catch {
+    // Presence must not fail chat if lastSeen write fails.
+  }
+}
+
 function getActiveUsers(workspaceId) {
   const room = workspacePresence.get(String(workspaceId));
   if (!room) return [];
 
   const now = Date.now();
   const active = [];
+  const staleUserIds = [];
 
   for (const [userId, entry] of room.entries()) {
     if (now - entry.lastSeen > STALE_MS) {
       room.delete(userId);
+      staleUserIds.push({ userId, lastSeen: entry.lastSeen });
       continue;
     }
     active.push({
       userId: entry.userId,
       userName: entry.userName,
       profilePictureUrl: entry.profilePictureUrl,
+      lastSeen: entry.lastSeen,
     });
+  }
+
+  if (staleUserIds.length) {
+    void Promise.all(
+      staleUserIds.map(({ userId, lastSeen }) => persistLastSeen(userId, lastSeen, true)),
+    );
   }
 
   if (room.size === 0) {
@@ -89,6 +117,7 @@ export async function joinWorkspacePresence(userId, workspaceId, profile = {}) {
   const resolved = await resolveUserProfile(userId);
   const workspaceKey = String(workspaceId);
   const userKey = String(userId);
+  const now = Date.now();
 
   if (!workspacePresence.has(workspaceKey)) {
     workspacePresence.set(workspaceKey, new Map());
@@ -101,9 +130,10 @@ export async function joinWorkspacePresence(userId, workspaceId, profile = {}) {
       profile.profilePictureUrl !== undefined
         ? profile.profilePictureUrl
         : resolved.profilePictureUrl,
-    lastSeen: Date.now(),
+    lastSeen: now,
   });
 
+  void persistLastSeen(userId, now);
   await broadcastPresence(workspaceId, { force: true });
   await sendPresenceSnapshot(userId, workspaceId);
   return true;
@@ -117,6 +147,7 @@ export async function touchWorkspacePresence(userId, workspaceId) {
   if (!entry) return false;
 
   entry.lastSeen = Date.now();
+  void persistLastSeen(userId, entry.lastSeen);
   await broadcastPresence(workspaceId);
   return true;
 }
@@ -127,26 +158,35 @@ export async function leaveWorkspacePresence(userId, workspaceId) {
   const room = workspacePresence.get(workspaceKey);
   if (!room?.has(userKey)) return;
 
+  const entry = room.get(userKey);
   room.delete(userKey);
   if (room.size === 0) {
     workspacePresence.delete(workspaceKey);
   }
 
+  await persistLastSeen(userId, entry?.lastSeen || Date.now(), true);
   await broadcastPresence(workspaceId, { force: true });
 }
 
 export async function leaveAllWorkspacePresence(userId) {
   const userKey = String(userId);
   const workspaceIds = [];
+  let lastSeen = Date.now();
 
   for (const [workspaceId, room] of workspacePresence.entries()) {
     if (room.has(userKey)) {
+      const entry = room.get(userKey);
+      if (entry?.lastSeen) lastSeen = entry.lastSeen;
       room.delete(userKey);
       if (room.size === 0) {
         workspacePresence.delete(workspaceId);
       }
       workspaceIds.push(workspaceId);
     }
+  }
+
+  if (workspaceIds.length) {
+    await persistLastSeen(userId, lastSeen, true);
   }
 
   await Promise.all(
@@ -181,7 +221,10 @@ export async function handleWorkspacePresenceMessage(ws, data) {
   }
 
   if (data.type === 'workspace:presence:leave') {
-    ws.workspacePresenceId = null;
+    // Multi-workspace clients may leave one room while staying in others.
+    if (String(ws.workspacePresenceId) === String(data.workspaceId)) {
+      ws.workspacePresenceId = null;
+    }
     await leaveWorkspacePresence(userId, data.workspaceId);
   }
 }

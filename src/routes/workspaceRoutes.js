@@ -21,6 +21,7 @@ import {
 } from '../controllers/workspaceMessageController.js';
 import {
   listDirectChatThreads,
+  listAllDirectChatThreads,
   openDirectChat,
   getDirectChatMessages,
   sendDirectChatMessage,
@@ -29,6 +30,7 @@ import {
   deleteDirectChatMessage,
   uploadDirectChatAttachment,
   getChatUnreadSummary,
+  getAllChatUnreadSummary,
 } from '../controllers/workspaceDirectChatController.js';
 import {
   profileUpload,
@@ -48,6 +50,8 @@ router.use(rateLimiters.general);
 
 router.get('/', listWorkspaces);
 router.post('/', createWorkspace);
+router.get('/inbox/direct-chats', listAllDirectChatThreads);
+router.get('/inbox/chat-unread-summary', getAllChatUnreadSummary);
 router.patch('/:workspaceId', updateWorkspace);
 router.post(
   '/:workspaceId/profile-picture',

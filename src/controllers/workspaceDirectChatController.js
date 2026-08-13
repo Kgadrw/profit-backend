@@ -45,7 +45,7 @@ async function getWorkspacePeers(workspaceId, currentUserId) {
   if (!peerIds.length) return [];
 
   const users = await User.find({ _id: { $in: peerIds } })
-    .select('name email profilePictureUrl')
+    .select('name email profilePictureUrl lastSeenAt')
     .lean();
 
   return users.map((user) => ({
@@ -53,6 +53,7 @@ async function getWorkspacePeers(workspaceId, currentUserId) {
     name: user.name || 'User',
     email: user.email || '',
     profilePictureUrl: user.profilePictureUrl || null,
+    lastSeenAt: user.lastSeenAt ? new Date(user.lastSeenAt).toISOString() : null,
   }));
 }
 
@@ -103,16 +104,87 @@ async function countUnreadForConversation(conversationId, userId) {
   });
 }
 
+async function buildDirectChatThreadsForWorkspace(workspaceId, userId, workspaceMeta = {}) {
+  const [peers, conversations] = await Promise.all([
+    getWorkspacePeers(workspaceId, userId),
+    WorkspaceDirectConversation.find({
+      workspaceId,
+      participantIds: userId,
+    })
+      .sort({ lastMessageAt: -1, updatedAt: -1 })
+      .lean(),
+  ]);
+
+  const conversationByPeerId = new Map();
+  for (const conversation of conversations) {
+    const otherUserId = getOtherParticipantId(conversation, userId);
+    if (otherUserId) {
+      conversationByPeerId.set(otherUserId, conversation);
+    }
+  }
+
+  const threads = await Promise.all(
+    peers.map(async (peer) => {
+      const conversation = conversationByPeerId.get(peer.userId);
+      const unreadCount = conversation
+        ? await countUnreadForConversation(conversation._id, userId)
+        : 0;
+
+      return {
+        conversationId: conversation ? String(conversation._id) : null,
+        workspaceId: String(workspaceMeta.workspaceId || workspaceId),
+        workspaceName: workspaceMeta.workspaceName || 'Workspace',
+        otherUser: peer,
+        lastMessageAt: conversation?.lastMessageAt || null,
+        lastMessageBody: conversation?.lastMessageBody || null,
+        lastSenderUserId: conversation?.lastSenderUserId
+          ? String(conversation.lastSenderUserId)
+          : null,
+        unreadCount,
+      };
+    }),
+  );
+
+  threads.sort((a, b) => {
+    const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+    const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+    if (aTime !== bTime) return bTime - aTime;
+    return a.otherUser.name.localeCompare(b.otherUser.name);
+  });
+
+  return threads;
+}
+
+function normalizeWaveform(raw) {
+  if (!Array.isArray(raw)) return undefined;
+  const peaks = raw
+    .slice(0, 64)
+    .map((value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.min(1, n));
+    });
+  return peaks.length ? peaks : undefined;
+}
+
 function normalizeAttachments(rawAttachments) {
   if (!Array.isArray(rawAttachments)) return [];
   return rawAttachments
     .slice(0, 5)
-    .map((item) => ({
-      url: String(item?.url || '').trim(),
-      fileName: String(item?.fileName || '').trim(),
-      mimeType: String(item?.mimeType || 'application/octet-stream').trim(),
-      size: Number(item?.size) || 0,
-    }))
+    .map((item) => {
+      const durationRaw = Number(item?.duration);
+      const duration =
+        Number.isFinite(durationRaw) && durationRaw > 0 ? Math.min(durationRaw, 3600) : undefined;
+      const waveform = normalizeWaveform(item?.waveform);
+      return {
+        url: String(item?.url || '').trim(),
+        fileName: String(item?.fileName || '').trim(),
+        mimeType: String(item?.mimeType || 'application/octet-stream').trim(),
+        size: Number(item?.size) || 0,
+        ...(duration != null ? { duration } : {}),
+        ...(waveform ? { waveform } : {}),
+      };
+    })
     .filter((item) => item.url && item.fileName);
 }
 
@@ -123,7 +195,9 @@ function buildLastMessagePreview(body, attachments, deletedAt, replyTo) {
   if (!preview && attachments?.length) {
     const first = attachments[0];
     if (first.mimeType?.startsWith('image/')) preview = '📷 Photo';
-    else preview = `📎 ${first.fileName}`;
+    else if (first.mimeType?.startsWith('audio/') || /\.(webm|ogg|mp3|m4a|aac|wav)$/i.test(first.fileName || '')) {
+      preview = '🎤 Voice message';
+    } else preview = `📎 ${first.fileName}`;
   }
   if (!preview) return '';
 
@@ -296,55 +370,60 @@ export const listDirectChatThreads = async (req, res) => {
 
     await assertWorkspaceMember(workspaceId, userId);
 
-    const [peers, conversations] = await Promise.all([
-      getWorkspacePeers(workspaceId, userId),
-      WorkspaceDirectConversation.find({
-        workspaceId,
-        participantIds: userId,
-      })
-        .sort({ lastMessageAt: -1, updatedAt: -1 })
-        .lean(),
-    ]);
-
-    const conversationByPeerId = new Map();
-    for (const conversation of conversations) {
-      const otherUserId = getOtherParticipantId(conversation, userId);
-      if (otherUserId) {
-        conversationByPeerId.set(otherUserId, conversation);
-      }
-    }
-
-    const threads = await Promise.all(
-      peers.map(async (peer) => {
-        const conversation = conversationByPeerId.get(peer.userId);
-        const unreadCount = conversation
-          ? await countUnreadForConversation(conversation._id, userId)
-          : 0;
-
-        return {
-          conversationId: conversation ? String(conversation._id) : null,
-          otherUser: peer,
-          lastMessageAt: conversation?.lastMessageAt || null,
-          lastMessageBody: conversation?.lastMessageBody || null,
-          lastSenderUserId: conversation?.lastSenderUserId
-            ? String(conversation.lastSenderUserId)
-            : null,
-          unreadCount,
-        };
-      }),
-    );
-
-    threads.sort((a, b) => {
-      const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
-      const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
-      if (aTime !== bTime) return bTime - aTime;
-      return a.otherUser.name.localeCompare(b.otherUser.name);
+    const workspace = await Workspace.findById(workspaceId).select('name').lean();
+    const threads = await buildDirectChatThreadsForWorkspace(workspaceId, userId, {
+      workspaceId: String(workspaceId),
+      workspaceName: workspace?.name || 'Workspace',
     });
 
     res.json({ data: threads });
   } catch (error) {
     console.error('List direct chat threads error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load chats' });
+  }
+};
+
+/** Inbox across every organisation the user has joined (no active-workspace switch required). */
+export const listAllDirectChatThreads = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const memberships = await WorkspaceMember.find({ userId }).select('workspaceId').lean();
+    if (!memberships.length) {
+      return res.json({ data: [] });
+    }
+
+    const workspaceIds = memberships.map((row) => row.workspaceId);
+    const workspaces = await Workspace.find({ _id: { $in: workspaceIds } })
+      .select('name')
+      .lean();
+    const nameById = new Map(
+      workspaces.map((row) => [String(row._id), row.name || 'Workspace']),
+    );
+
+    const nested = await Promise.all(
+      workspaceIds.map((workspaceId) =>
+        buildDirectChatThreadsForWorkspace(workspaceId, userId, {
+          workspaceId: String(workspaceId),
+          workspaceName: nameById.get(String(workspaceId)) || 'Workspace',
+        }),
+      ),
+    );
+
+    const threads = nested.flat().sort((a, b) => {
+      const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+      const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+      if (aTime !== bTime) return bTime - aTime;
+      const orgCmp = String(a.workspaceName || '').localeCompare(String(b.workspaceName || ''));
+      if (orgCmp !== 0) return orgCmp;
+      return a.otherUser.name.localeCompare(b.otherUser.name);
+    });
+
+    res.json({ data: threads });
+  } catch (error) {
+    console.error('List all direct chat threads error:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to load chats',
+    });
   }
 };
 
@@ -392,7 +471,7 @@ export const openDirectChat = async (req, res) => {
     }
 
     const otherUser = await User.findById(otherUserId)
-      .select('name email profilePictureUrl')
+      .select('name email profilePictureUrl lastSeenAt')
       .lean();
 
     res.json({
@@ -403,6 +482,9 @@ export const openDirectChat = async (req, res) => {
           name: otherUser?.name || 'User',
           email: otherUser?.email || '',
           profilePictureUrl: otherUser?.profilePictureUrl || null,
+          lastSeenAt: otherUser?.lastSeenAt
+            ? new Date(otherUser.lastSeenAt).toISOString()
+            : null,
         },
       },
     });
@@ -803,5 +885,56 @@ export const getChatUnreadSummary = async (req, res) => {
   } catch (error) {
     console.error('Get chat unread summary error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load unread summary' });
+  }
+};
+
+/** Unread totals across every organisation the user has joined. */
+export const getAllChatUnreadSummary = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const memberships = await WorkspaceMember.find({ userId }).select('workspaceId').lean();
+    if (!memberships.length) {
+      return res.json({
+        data: { groupUnread: 0, directUnread: 0, total: 0 },
+      });
+    }
+
+    const workspaceIds = memberships.map((row) => row.workspaceId);
+
+    const [groupUnread, conversations] = await Promise.all([
+      WorkspaceMessage.countDocuments({
+        workspaceId: { $in: workspaceIds },
+        senderUserId: { $ne: userId },
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+        'readBy.userId': { $ne: userId },
+      }),
+      WorkspaceDirectConversation.find({
+        workspaceId: { $in: workspaceIds },
+        participantIds: userId,
+      })
+        .select('_id')
+        .lean(),
+    ]);
+
+    let directUnread = 0;
+    if (conversations.length) {
+      const counts = await Promise.all(
+        conversations.map((row) => countUnreadForConversation(row._id, userId)),
+      );
+      directUnread = counts.reduce((sum, value) => sum + value, 0);
+    }
+
+    res.json({
+      data: {
+        groupUnread,
+        directUnread,
+        total: groupUnread + directUnread,
+      },
+    });
+  } catch (error) {
+    console.error('Get all chat unread summary error:', error);
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to load unread summary',
+    });
   }
 };
