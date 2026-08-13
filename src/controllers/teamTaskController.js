@@ -1,10 +1,44 @@
 import TeamTask from '../models/TeamTask.js';
 import TeamMember from '../models/TeamMember.js';
+import Project from '../models/Project.js';
+import ProjectMilestone from '../models/ProjectMilestone.js';
 import Notification from '../models/Notification.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
 import { assertCurrentUserIsAssignee } from '../utils/taskAssigneeAccess.js';
+
+const populateTask = (query) =>
+  query
+    .populate('assigneeId', 'name email jobTitle department status')
+    .populate('projectId', 'name status')
+    .populate('milestoneId', 'title status dueDate');
+
+async function resolveLinkedProjectId(req, projectId) {
+  if (projectId === undefined) return undefined;
+  if (projectId === null || projectId === '' || projectId === 'none') return null;
+  const project = await Project.findOne(buildListQuery(req, { _id: projectId })).select('_id');
+  if (!project) {
+    const err = new Error('Invalid project');
+    err.statusCode = 400;
+    throw err;
+  }
+  return project._id;
+}
+
+async function resolveLinkedMilestoneId(req, milestoneId, projectId) {
+  if (milestoneId === undefined) return undefined;
+  if (milestoneId === null || milestoneId === '' || milestoneId === 'none') return null;
+  const query = buildListQuery(req, { _id: milestoneId });
+  if (projectId) query.projectId = projectId;
+  const milestone = await ProjectMilestone.findOne(query).select('_id projectId');
+  if (!milestone) {
+    const err = new Error('Invalid milestone');
+    err.statusCode = 400;
+    throw err;
+  }
+  return milestone._id;
+}
 
 const notifyOwnerTaskCompleted = async (ownerId, task, member, completionNote) => {
   try {
@@ -30,16 +64,19 @@ const notifyOwnerTaskCompleted = async (ownerId, task, member, completionNote) =
 export const getTeamTasks = async (req, res) => {
   try {
     assertPageAccess(req, 'team');
-    const { status, department, assigneeId, monthKey } = req.query;
+    const { status, department, assigneeId, monthKey, projectId } = req.query;
     const query = buildListQuery(req);
     if (status) query.status = status;
     if (department) query.department = department;
     if (assigneeId) query.assigneeId = assigneeId;
     if (monthKey) query.monthKey = monthKey;
+    if (projectId) query.projectId = projectId;
 
-    const tasks = await TeamTask.find(query)
-      .populate('assigneeId', 'name email jobTitle department status')
-      .sort({ status: 1, dueDate: 1, createdAt: -1 });
+    const tasks = await populateTask(TeamTask.find(query)).sort({
+      status: 1,
+      dueDate: 1,
+      createdAt: -1,
+    });
 
     res.json({ data: tasks });
   } catch (error) {
@@ -120,9 +157,8 @@ export const getTeamTaskSummary = async (req, res) => {
 export const getTeamTask = async (req, res) => {
   try {
     assertPageAccess(req, 'team');
-    const task = await TeamTask.findOne(buildListQuery(req, { _id: req.params.id })).populate(
-      'assigneeId',
-      'name email jobTitle department',
+    const task = await populateTask(
+      TeamTask.findOne(buildListQuery(req, { _id: req.params.id })),
     );
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
@@ -145,6 +181,8 @@ export const createTeamTask = async (req, res) => {
       priority,
       dueDate,
       monthKey,
+      projectId,
+      milestoneId,
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ error: 'Task title is required' });
@@ -152,6 +190,20 @@ export const createTeamTask = async (req, res) => {
 
     const member = await TeamMember.findOne(buildListQuery(req, { _id: assigneeId }));
     if (!member) return res.status(400).json({ error: 'Invalid team member' });
+
+    let linkedProjectId = null;
+    let linkedMilestoneId = null;
+    try {
+      linkedProjectId = await resolveLinkedProjectId(req, projectId);
+      if (linkedProjectId === undefined) linkedProjectId = null;
+      linkedMilestoneId = await resolveLinkedMilestoneId(req, milestoneId, linkedProjectId);
+      if (linkedMilestoneId === undefined) linkedMilestoneId = null;
+      if (linkedMilestoneId && !linkedProjectId) {
+        return res.status(400).json({ error: 'A project is required when linking a milestone' });
+      }
+    } catch (resolveError) {
+      return res.status(400).json({ error: resolveError.message || 'Invalid project or milestone' });
+    }
 
     const scope = buildCreateScope(req);
     const task = await TeamTask.create({
@@ -165,9 +217,11 @@ export const createTeamTask = async (req, res) => {
       priority: priority || 'medium',
       dueDate: dueDate ? new Date(dueDate) : undefined,
       monthKey: monthKey || undefined,
+      projectId: linkedProjectId,
+      milestoneId: linkedMilestoneId,
     });
 
-    const populated = await TeamTask.findById(task._id).populate('assigneeId', 'name email jobTitle department');
+    const populated = await populateTask(TeamTask.findById(task._id));
     await broadcastScopeChange(req, 'team-task:created', populated);
     res.status(201).json({ data: populated });
   } catch (error) {
@@ -202,6 +256,8 @@ export const updateTeamTask = async (req, res) => {
       'monthKey',
       'completionNote',
       'sortOrder',
+      'projectId',
+      'milestoneId',
     ];
 
     for (const field of fields) {
@@ -212,6 +268,20 @@ export const updateTeamTask = async (req, res) => {
         const member = await TeamMember.findOne(buildListQuery(req, { _id: req.body.assigneeId }));
         if (!member) return res.status(400).json({ error: 'Invalid team member' });
         task.assigneeId = req.body.assigneeId;
+      } else if (field === 'projectId') {
+        try {
+          task.projectId = await resolveLinkedProjectId(req, req.body.projectId);
+          if (!task.projectId) task.milestoneId = null;
+        } catch (resolveError) {
+          return res.status(400).json({ error: resolveError.message || 'Invalid project' });
+        }
+      } else if (field === 'milestoneId') {
+        try {
+          const projectRef = task.projectId || req.body.projectId || null;
+          task.milestoneId = await resolveLinkedMilestoneId(req, req.body.milestoneId, projectRef);
+        } catch (resolveError) {
+          return res.status(400).json({ error: resolveError.message || 'Invalid milestone' });
+        }
       } else if (typeof req.body[field] === 'string') {
         task[field] = req.body[field].trim();
       } else {
@@ -228,7 +298,7 @@ export const updateTeamTask = async (req, res) => {
     }
 
     await task.save();
-    const populated = await TeamTask.findById(task._id).populate('assigneeId', 'name email jobTitle department');
+    const populated = await populateTask(TeamTask.findById(task._id));
     await broadcastScopeChange(req, 'team-task:updated', populated);
     res.json({ data: populated });
   } catch (error) {
@@ -259,7 +329,7 @@ export const completeTeamTask = async (req, res) => {
       await notifyOwnerTaskCompleted(req.user._id, task, member, task.completionNote);
     }
 
-    const populated = await TeamTask.findById(task._id).populate('assigneeId', 'name email jobTitle department');
+    const populated = await populateTask(TeamTask.findById(task._id));
     await broadcastScopeChange(req, 'team-task:updated', populated);
     res.json({ data: populated });
   } catch (error) {

@@ -94,9 +94,12 @@ export async function notifyWorkspaceChatPush({
 
   const sender = message.senderName || 'Someone';
   const title = workspaceName ? `${sender} · ${workspaceName}` : sender;
+  const replyPrefix = message.replyTo?.messageId
+    ? `↩ ${message.replyTo.senderName || 'Message'}: ${truncateBody(message.replyTo.body || '', 60)}\n`
+    : '';
   const payload = {
     title,
-    body: truncateBody(message.body),
+    body: `${replyPrefix}${truncateBody(message.body)}`,
     icon: message.senderProfilePictureUrl || '/chat.png',
     badge: '/chat.png',
     tag: `workspace-chat-${message._id}`,
@@ -120,9 +123,12 @@ export async function notifyDirectMessagePush({
   if (!recipientUserId || !message || !ensureConfigured()) return;
 
   const sender = message.senderName || 'Someone';
+  const replyPrefix = message.replyTo?.messageId
+    ? `↩ ${message.replyTo.senderName || 'Message'}: ${truncateBody(message.replyTo.body || '', 60)}\n`
+    : '';
   const payload = {
     title: sender,
-    body: buildDirectMessagePreview(message),
+    body: `${replyPrefix}${buildDirectMessagePreview(message)}`,
     icon: message.senderProfilePictureUrl || '/chat.png',
     badge: '/chat.png',
     tag: `workspace-dm-${message._id}`,

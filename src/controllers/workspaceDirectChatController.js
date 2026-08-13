@@ -116,14 +116,22 @@ function normalizeAttachments(rawAttachments) {
     .filter((item) => item.url && item.fileName);
 }
 
-function buildLastMessagePreview(body, attachments, deletedAt) {
+function buildLastMessagePreview(body, attachments, deletedAt, replyTo) {
   if (deletedAt) return 'Message deleted';
   const trimmedBody = String(body || '').trim();
-  if (trimmedBody) return trimmedBody;
-  if (!attachments?.length) return '';
-  const first = attachments[0];
-  if (first.mimeType?.startsWith('image/')) return '📷 Photo';
-  return `📎 ${first.fileName}`;
+  let preview = trimmedBody;
+  if (!preview && attachments?.length) {
+    const first = attachments[0];
+    if (first.mimeType?.startsWith('image/')) preview = '📷 Photo';
+    else preview = `📎 ${first.fileName}`;
+  }
+  if (!preview) return '';
+
+  if (replyTo?.messageId) {
+    const replyName = String(replyTo.senderName || '').trim();
+    return replyName ? `↩ ${replyName}: ${preview}` : `↩ ${preview}`;
+  }
+  return preview;
 }
 
 async function refreshConversationPreview(conversationId) {
@@ -139,7 +147,12 @@ async function refreshConversationPreview(conversationId) {
     return;
   }
 
-  const preview = buildLastMessagePreview(last.body, last.attachments, last.deletedAt);
+  const preview = buildLastMessagePreview(
+    last.body,
+    last.attachments,
+    last.deletedAt,
+    last.replyTo,
+  );
   await WorkspaceDirectConversation.updateOne(
     { _id: conversationId },
     {
@@ -151,10 +164,84 @@ async function refreshConversationPreview(conversationId) {
 }
 
 function serializeDirectMessage(message, conversationId, workspaceId) {
+  const replyTo = message.replyTo?.messageId
+    ? {
+        messageId: String(message.replyTo.messageId),
+        senderUserId: message.replyTo.senderUserId
+          ? String(message.replyTo.senderUserId)
+          : null,
+        senderName: message.replyTo.senderName || 'User',
+        body: message.replyTo.body || '',
+        deletedAt: message.replyTo.deletedAt || null,
+      }
+    : null;
+
   return {
     ...message,
+    _id: String(message._id),
     conversationId: String(conversationId),
     workspaceId: String(workspaceId),
+    senderUserId: String(message.senderUserId),
+    replyTo,
+  };
+}
+
+function buildReplyToSnapshot(sourceMessage) {
+  if (!sourceMessage) return null;
+  const deleted = Boolean(sourceMessage.deletedAt);
+  return {
+    messageId: sourceMessage._id,
+    senderUserId: sourceMessage.senderUserId,
+    senderName: sourceMessage.senderName || 'User',
+    body: deleted ? '' : String(sourceMessage.body || '').trim().slice(0, 280),
+    deletedAt: sourceMessage.deletedAt || null,
+  };
+}
+
+function normalizeClientReplyTo(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const messageId = raw.messageId || raw._id;
+  if (!messageId || !mongoose.Types.ObjectId.isValid(String(messageId))) return null;
+  const senderUserId = raw.senderUserId ? String(raw.senderUserId) : '';
+  return {
+    messageId: new mongoose.Types.ObjectId(String(messageId)),
+    senderUserId:
+      senderUserId && mongoose.Types.ObjectId.isValid(senderUserId)
+        ? new mongoose.Types.ObjectId(senderUserId)
+        : null,
+    senderName: String(raw.senderName || 'User').trim() || 'User',
+    body: String(raw.body || '').trim().slice(0, 280),
+    deletedAt: raw.deletedAt ? new Date(raw.deletedAt) : null,
+  };
+}
+
+async function resolveDirectReplyTo(conversationId, workspaceId, replyToMessageId) {
+  if (!replyToMessageId) return null;
+  if (!mongoose.Types.ObjectId.isValid(String(replyToMessageId))) {
+    return null;
+  }
+
+  const source = await WorkspaceDirectMessage.findOne({
+    _id: replyToMessageId,
+    conversationId,
+    workspaceId,
+  }).lean();
+
+  if (!source) return null;
+  return buildReplyToSnapshot(source);
+}
+
+function attachReplyToCreateData(createData, replyTo) {
+  if (!replyTo?.messageId) return createData;
+  return {
+    ...createData,
+    replyTo: {
+      messageId: replyTo.messageId,
+      senderUserId: replyTo.senderUserId || null,
+      senderName: replyTo.senderName || 'User',
+      body: replyTo.body || '',
+      deletedAt: replyTo.deletedAt || null,
+    },
   };
 }
 
@@ -353,7 +440,11 @@ export const getDirectChatMessages = async (req, res) => {
       .limit(limit)
       .lean();
 
-    res.json({ data: messages.reverse() });
+    res.json({
+      data: messages
+        .reverse()
+        .map((row) => serializeDirectMessage(row, conversationId, workspaceId)),
+    });
   } catch (error) {
     console.error('Get direct chat messages error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load messages' });
@@ -363,7 +454,8 @@ export const getDirectChatMessages = async (req, res) => {
 export const sendDirectChatMessage = async (req, res) => {
   try {
     const { workspaceId, conversationId } = req.params;
-    const { body, attachments: rawAttachments } = req.body || {};
+    const { body, attachments: rawAttachments, replyToMessageId, replyTo: clientReplyTo } =
+      req.body || {};
     const userId = req.user._id;
 
     if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
@@ -384,6 +476,10 @@ export const sendDirectChatMessage = async (req, res) => {
 
     await assertWorkspaceMember(workspaceId, userId);
     const conversation = await assertConversationAccess(conversationId, workspaceId, userId);
+    // Prefer the client snapshot (what the user saw), fall back to DB lookup.
+    const replyTo =
+      normalizeClientReplyTo(clientReplyTo) ||
+      (await resolveDirectReplyTo(conversationId, workspaceId, replyToMessageId));
 
     for (const attachment of attachments) {
       const expectedPrefix = `/api/files/chat-attachments/${workspaceId}/${conversationId}/`;
@@ -392,19 +488,43 @@ export const sendDirectChatMessage = async (req, res) => {
       }
     }
 
-    const message = await WorkspaceDirectMessage.create({
-      conversationId,
-      workspaceId,
-      senderUserId: user._id,
-      senderName: user.name || 'User',
-      senderProfilePictureUrl: user.profilePictureUrl || null,
-      body: trimmedBody,
-      attachments,
-      readBy: [],
-    });
+    const createData = attachReplyToCreateData(
+      {
+        conversationId,
+        workspaceId,
+        senderUserId: user._id,
+        senderName: user.name || 'User',
+        senderProfilePictureUrl: user.profilePictureUrl || null,
+        body: trimmedBody,
+        attachments,
+        readBy: [],
+      },
+      replyTo,
+    );
 
-    const preview = buildLastMessagePreview(trimmedBody, attachments);
-    const now = message.createdAt || new Date();
+    const created = await WorkspaceDirectMessage.create(createData);
+    const saved =
+      (await WorkspaceDirectMessage.findById(created._id).lean()) || created.toObject();
+
+    const payload = serializeDirectMessage(saved, conversationId, workspaceId);
+    // Guarantee reply quote survives even if mongoose omitted the nested path.
+    if (!payload.replyTo?.messageId && replyTo?.messageId) {
+      payload.replyTo = {
+        messageId: String(replyTo.messageId),
+        senderUserId: replyTo.senderUserId ? String(replyTo.senderUserId) : null,
+        senderName: replyTo.senderName || 'User',
+        body: replyTo.body || '',
+        deletedAt: replyTo.deletedAt || null,
+      };
+    }
+
+    const preview = buildLastMessagePreview(
+      trimmedBody,
+      attachments,
+      null,
+      payload.replyTo || replyTo || saved.replyTo,
+    );
+    const now = saved.createdAt || new Date();
     await WorkspaceDirectConversation.updateOne(
       { _id: conversationId },
       {
@@ -413,8 +533,6 @@ export const sendDirectChatMessage = async (req, res) => {
         lastSenderUserId: user._id,
       },
     );
-
-    const payload = serializeDirectMessage(message.toObject(), conversationId, workspaceId);
 
     await broadcastToConversation(conversation, WORKSPACE_DM_MESSAGE_EVENT, payload);
 
@@ -445,7 +563,7 @@ export const sendDirectChatMessage = async (req, res) => {
         });
     }
 
-    res.status(201).json({ data: message });
+    res.status(201).json({ data: payload });
   } catch (error) {
     console.error('Send direct chat message error:', error);
     if (error.name === 'ValidationError') {

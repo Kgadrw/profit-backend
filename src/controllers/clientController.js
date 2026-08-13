@@ -3,10 +3,30 @@ import Invoice from '../models/Invoice.js';
 import Income from '../models/Income.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
+import { canAccessWorkspacePage } from '../constants/workspacePermissions.js';
+
+function assertClientsReadAccess(req) {
+  const scope = req.dataScope;
+  if (!scope || scope.mode !== 'workspace') {
+    return true;
+  }
+  const role = scope.role;
+  const permissions = scope.permissions;
+  if (
+    canAccessWorkspacePage(role, permissions, 'finance') ||
+    canAccessWorkspacePage(role, permissions, 'sales')
+  ) {
+    return true;
+  }
+  const error = new Error('You do not have access to customers in this workspace');
+  error.statusCode = 403;
+  throw error;
+}
 
 export const getClients = async (req, res) => {
   try {
-    assertPageAccess(req, 'finance');
+    // Sales page needs customer picker; finance owns full CRM.
+    assertClientsReadAccess(req);
     const clients = await Client.find(buildListQuery(req)).sort({ createdAt: -1 });
     res.json({ data: clients });
   } catch (error) {

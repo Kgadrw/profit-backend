@@ -31,6 +31,32 @@ const restoreProductStock = async (product, quantity) => {
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** Attach optional customer / free-text buyer to sale payload. */
+async function resolveBuyerFields(req, saleData) {
+  const rawBuyer =
+    saleData.buyerName != null && saleData.buyerName !== undefined
+      ? String(saleData.buyerName).trim()
+      : '';
+  let clientId = saleData.clientId;
+  if (clientId === '' || clientId === undefined || clientId === null) {
+    clientId = null;
+  }
+
+  if (clientId) {
+    const client = await Client.findOne(buildListQuery(req, { _id: clientId }));
+    if (!client) {
+      const error = new Error('Customer not found');
+      error.statusCode = 400;
+      throw error;
+    }
+    saleData.clientId = client._id;
+    saleData.buyerName = rawBuyer || client.name || '';
+  } else {
+    saleData.clientId = null;
+    saleData.buyerName = rawBuyer;
+  }
+}
+
 /** Resolve inventory product by Mongo id or exact name (case-insensitive). */
 const resolveInventoryProduct = async (req, productId, productName) => {
   const mongoose = (await import('mongoose')).default;
@@ -160,6 +186,15 @@ export const createSale = async (req, res) => {
     if (saleData.profit) saleData.profit = parseFloat(saleData.profit);
     if (saleData.customAmount) saleData.customAmount = parseFloat(saleData.customAmount);
     if (saleData.date) saleData.date = new Date(saleData.date);
+
+    try {
+      await resolveBuyerFields(req, saleData);
+    } catch (buyerErr) {
+      if (buyerErr.statusCode === 400) {
+        return res.status(400).json({ error: buyerErr.message });
+      }
+      throw buyerErr;
+    }
 
     const isServiceSale = saleData.saleType === 'service' || saleData.isService === true;
     saleData.saleType = isServiceSale ? 'service' : 'product';
@@ -337,6 +372,17 @@ export const updateSale = async (req, res) => {
     if (updateData.profit) updateData.profit = parseFloat(updateData.profit);
     if (updateData.date) updateData.date = new Date(updateData.date);
 
+    if (updateData.clientId !== undefined || updateData.buyerName !== undefined) {
+      try {
+        await resolveBuyerFields(req, updateData);
+      } catch (buyerErr) {
+        if (buyerErr.statusCode === 400) {
+          return res.status(400).json({ error: buyerErr.message });
+        }
+        throw buyerErr;
+      }
+    }
+
     const quantityChanged = updateData.quantity !== undefined && updateData.quantity !== oldSale.quantity;
     const productIdChanged = updateData.productId !== undefined && 
                              updateData.productId.toString() !== oldSale.productId?.toString();
@@ -394,6 +440,7 @@ export const updateSale = async (req, res) => {
 
 export const deleteSale = async (req, res) => {
   try {
+    // Workspace: only admins/owners or members with the sales permission can delete.
     assertPageAccess(req, 'sales');
     const userId = getUserId(req);
 

@@ -4,6 +4,7 @@ import ProjectTask from '../models/ProjectTask.js';
 import ProjectMember from '../models/ProjectMember.js';
 import TimeEntry from '../models/TimeEntry.js';
 import TeamMember from '../models/TeamMember.js';
+import TeamTask from '../models/TeamTask.js';
 import mongoose from 'mongoose';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
@@ -147,29 +148,68 @@ export const getProjectsSummary = async (req, res) => {
     const scope = buildListQuery(req);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const weekAhead = new Date(today);
+    weekAhead.setDate(weekAhead.getDate() + 7);
+    const weekAgo = new Date(today);
+    weekAgo.setDate(weekAgo.getDate() - 7);
     const contributionProjectId = req.query.projectId;
 
-    const [projects, overdueMilestones, openTasks, completedTasks, timeEntries, openTaskByProject] =
-      await Promise.all([
-        Project.find(scope)
-          .populate('leadMemberId', 'name email jobTitle department')
-          .select('name status priority startDate targetEndDate clientName leadMemberId updatedAt')
-          .lean(),
-        ProjectMilestone.countDocuments({
-          ...scope,
-          status: { $ne: 'completed' },
-          dueDate: { $lt: today },
-        }),
-        ProjectTask.countDocuments({ ...scope, status: { $ne: 'done' } }),
-        ProjectTask.find({ ...scope, status: 'done', completedAt: { $ne: null } })
-          .select('completedAt projectId')
-          .lean(),
-        TimeEntry.find(scope).select('date hours projectId').lean(),
-        ProjectTask.aggregate([
-          { $match: { ...scope, status: { $ne: 'done' } } },
-          { $group: { _id: '$projectId', count: { $sum: 1 } } },
-        ]),
-      ]);
+    const [
+      projects,
+      overdueMilestones,
+      openProjectTasks,
+      completedProjectTasks,
+      timeEntries,
+      openProjectTaskByProject,
+      linkedTeamTasks,
+      overdueMilestoneRows,
+      recentCompletedMilestones,
+    ] = await Promise.all([
+      Project.find(scope)
+        .populate('leadMemberId', 'name email jobTitle department')
+        .select('name status priority startDate targetEndDate clientName leadMemberId updatedAt completedAt')
+        .lean(),
+      ProjectMilestone.countDocuments({
+        ...scope,
+        status: { $ne: 'completed' },
+        dueDate: { $lt: today },
+      }),
+      ProjectTask.countDocuments({ ...scope, status: { $ne: 'done' } }),
+      ProjectTask.find({ ...scope, status: 'done', completedAt: { $ne: null } })
+        .select('completedAt projectId')
+        .lean(),
+      TimeEntry.find(scope).select('date hours projectId').lean(),
+      ProjectTask.aggregate([
+        { $match: { ...scope, status: { $ne: 'done' } } },
+        { $group: { _id: '$projectId', count: { $sum: 1 } } },
+      ]),
+      TeamTask.find({
+        ...scope,
+        projectId: { $ne: null },
+      })
+        .select('title status priority dueDate completedAt projectId')
+        .lean(),
+      ProjectMilestone.find({
+        ...scope,
+        status: { $ne: 'completed' },
+        dueDate: { $lt: today },
+      })
+        .select('title dueDate projectId')
+        .sort({ dueDate: 1 })
+        .limit(8)
+        .lean(),
+      ProjectMilestone.find({
+        ...scope,
+        status: 'completed',
+        completedAt: { $gte: weekAgo },
+      })
+        .select('title completedAt projectId')
+        .sort({ completedAt: -1 })
+        .limit(8)
+        .lean(),
+    ]);
+
+    const projectNameById = new Map(projects.map((row) => [String(row._id), row.name]));
 
     const byStatus = { planning: 0, active: 0, on_hold: 0, completed: 0, cancelled: 0 };
     for (const row of projects) {
@@ -177,8 +217,113 @@ export const getProjectsSummary = async (req, res) => {
     }
 
     const openTaskMap = new Map(
-      openTaskByProject.map((row) => [String(row._id), row.count]),
+      openProjectTaskByProject.map((row) => [String(row._id), row.count]),
     );
+    for (const task of linkedTeamTasks) {
+      if (!task.projectId || task.status === 'done') continue;
+      const key = String(task.projectId);
+      openTaskMap.set(key, (openTaskMap.get(key) || 0) + 1);
+    }
+
+    const openLinkedTeamTasks = linkedTeamTasks.filter((task) => task.status !== 'done').length;
+    const openTasks = openProjectTasks + openLinkedTeamTasks;
+
+    const taskStatus = { todo: 0, in_progress: 0, done: 0 };
+    for (const task of linkedTeamTasks) {
+      if (task.status in taskStatus) taskStatus[task.status] += 1;
+    }
+
+    const reminders = [];
+    for (const task of linkedTeamTasks) {
+      if (task.status === 'done' || !task.dueDate) continue;
+      const due = new Date(task.dueDate);
+      due.setHours(0, 0, 0, 0);
+      const projectKey = String(task.projectId);
+      if (due < today) {
+        reminders.push({
+          id: `task-overdue-${task._id}`,
+          type: 'overdue_task',
+          title: task.title,
+          dueDate: task.dueDate,
+          projectId: projectKey,
+          projectName: projectNameById.get(projectKey) || '',
+          priority: task.priority || 'medium',
+        });
+      } else if (due <= weekAhead) {
+        reminders.push({
+          id: `task-due-${task._id}`,
+          type: 'due_soon_task',
+          title: task.title,
+          dueDate: task.dueDate,
+          projectId: projectKey,
+          projectName: projectNameById.get(projectKey) || '',
+          priority: task.priority || 'medium',
+        });
+      }
+    }
+    for (const milestone of overdueMilestoneRows) {
+      const projectKey = String(milestone.projectId);
+      reminders.push({
+        id: `milestone-overdue-${milestone._id}`,
+        type: 'overdue_milestone',
+        title: milestone.title,
+        dueDate: milestone.dueDate,
+        projectId: projectKey,
+        projectName: projectNameById.get(projectKey) || '',
+      });
+    }
+    reminders.sort((a, b) => {
+      const aTime = a.dueDate ? new Date(a.dueDate).getTime() : 0;
+      const bTime = b.dueDate ? new Date(b.dueDate).getTime() : 0;
+      return aTime - bTime;
+    });
+
+    const tasksCompletedThisWeek = linkedTeamTasks.filter((task) => {
+      if (task.status !== 'done' || !task.completedAt) return false;
+      return new Date(task.completedAt) >= weekAgo;
+    });
+
+    const achievements = [];
+    if (tasksCompletedThisWeek.length > 0) {
+      achievements.push({
+        id: 'tasks-completed-week',
+        type: 'tasks_completed_week',
+        title: 'Tasks completed this week',
+        count: tasksCompletedThisWeek.length,
+      });
+    }
+    if (recentCompletedMilestones.length > 0) {
+      achievements.push({
+        id: 'milestones-completed-week',
+        type: 'milestones_completed_week',
+        title: 'Milestones completed this week',
+        count: recentCompletedMilestones.length,
+      });
+      for (const milestone of recentCompletedMilestones.slice(0, 3)) {
+        const projectKey = String(milestone.projectId);
+        achievements.push({
+          id: `milestone-done-${milestone._id}`,
+          type: 'milestone_completed',
+          title: milestone.title,
+          projectId: projectKey,
+          projectName: projectNameById.get(projectKey) || '',
+          completedAt: milestone.completedAt,
+        });
+      }
+    }
+    const recentCompletedProjects = projects
+      .filter((row) => row.status === 'completed' && row.completedAt && new Date(row.completedAt) >= weekAgo)
+      .slice(0, 3);
+    for (const project of recentCompletedProjects) {
+      achievements.push({
+        id: `project-done-${project._id}`,
+        type: 'project_completed',
+        title: project.name,
+        projectId: String(project._id),
+        projectName: project.name,
+        completedAt: project.completedAt,
+      });
+    }
 
     const needsWorkStatuses = new Set(['planning', 'active', 'on_hold']);
     const workQueue = projects
@@ -216,9 +361,15 @@ export const getProjectsSummary = async (req, res) => {
       if (exists) graphProjectId = String(contributionProjectId);
     }
 
+    const completedTeamTasks = linkedTeamTasks
+      .filter((task) => task.status === 'done' && task.completedAt)
+      .map((task) => ({ completedAt: task.completedAt, projectId: task.projectId }));
+
+    const allCompletedTasks = [...completedProjectTasks, ...completedTeamTasks];
+
     const taskRowsForGraph = graphProjectId
-      ? completedTasks.filter((row) => String(row.projectId) === graphProjectId)
-      : completedTasks;
+      ? allCompletedTasks.filter((row) => String(row.projectId) === graphProjectId)
+      : allCompletedTasks;
     const timeRowsForGraph = graphProjectId
       ? timeEntries.filter((row) => String(row.projectId) === graphProjectId)
       : timeEntries;
@@ -231,7 +382,10 @@ export const getProjectsSummary = async (req, res) => {
         byStatus,
         overdueMilestones,
         openTasks,
-        tasksCompletedWeekly: buildWeeklySeries(completedTasks, 'completedAt'),
+        taskStatus,
+        reminders: reminders.slice(0, 12),
+        achievements: achievements.slice(0, 10),
+        tasksCompletedWeekly: buildWeeklySeries(allCompletedTasks, 'completedAt'),
         hoursLoggedWeekly: buildWeeklySeries(timeEntries, 'date', 'hours'),
         workQueue,
         projectOptions: projects.map((row) => ({
@@ -277,12 +431,18 @@ export const getProjectProfile = async (req, res) => {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const scope = buildListQuery(req, { projectId: project._id });
+    const teamTaskScope = buildListQuery(req, { projectId: project._id });
 
-    const [milestones, tasks, members, timeEntries] = await Promise.all([
+    const [milestones, tasks, teamTasks, members, timeEntries] = await Promise.all([
       ProjectMilestone.find(scope).sort({ sortOrder: 1, dueDate: 1, createdAt: 1 }),
       ProjectTask.find(scope)
         .populate('assigneeId', 'name email jobTitle department')
         .sort({ sortOrder: 1, status: 1, dueDate: 1 }),
+      TeamTask.find(teamTaskScope)
+        .populate('assigneeId', 'name email jobTitle department')
+        .populate('projectId', 'name status')
+        .populate('milestoneId', 'title status dueDate')
+        .sort({ status: 1, dueDate: 1, createdAt: -1 }),
       // List by project only — project already passed scope check. Avoid hiding rows
       // that share projectId+teamMemberId but have a mismatched workspaceId/userId.
       ProjectMember.find({ projectId: project._id })
@@ -295,13 +455,14 @@ export const getProjectProfile = async (req, res) => {
         .limit(50),
     ]);
 
-    const totalTasks = tasks.length;
-    const doneTasks = tasks.filter((t) => t.status === 'done').length;
+    const linkedTasks = teamTasks.length ? teamTasks : tasks;
+    const totalTasks = linkedTasks.length;
+    const doneTasks = linkedTasks.filter((t) => t.status === 'done').length;
     const totalMilestones = milestones.length;
     const doneMilestones = milestones.filter((m) => m.status === 'completed').length;
     const totalHours = timeEntries.reduce((sum, row) => sum + (row.hours || 0), 0);
 
-    const completedTaskRows = tasks
+    const completedTaskRows = linkedTasks
       .filter((t) => t.status === 'done' && t.completedAt)
       .map((t) => ({ completedAt: t.completedAt }));
 
@@ -310,6 +471,7 @@ export const getProjectProfile = async (req, res) => {
         project,
         milestones,
         tasks,
+        teamTasks,
         members,
         timeEntries,
         progress: {
@@ -320,6 +482,11 @@ export const getProjectProfile = async (req, res) => {
           totalMilestones,
           doneMilestones,
           totalHoursLogged: Math.round(totalHours * 100) / 100,
+          taskStatus: {
+            todo: linkedTasks.filter((t) => t.status === 'todo').length,
+            in_progress: linkedTasks.filter((t) => t.status === 'in_progress').length,
+            done: doneTasks,
+          },
         },
         velocity: {
           tasksCompletedWeekly: buildWeeklySeries(completedTaskRows, 'completedAt'),

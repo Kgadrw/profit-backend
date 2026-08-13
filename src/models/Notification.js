@@ -16,7 +16,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['new_user', 'low_stock', 'schedule', 'new_sale', 'new_product', 'general', 'task_completed', 'task_assigned', 'workspace_invite', 'workspace_message'],
+    enum: ['new_user', 'low_stock', 'schedule', 'new_sale', 'new_product', 'general', 'task_completed', 'task_assigned', 'workspace_invite', 'workspace_message', 'leave_request'],
     default: 'general',
   },
   title: {

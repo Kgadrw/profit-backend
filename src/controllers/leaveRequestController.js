@@ -4,6 +4,10 @@ import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dat
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { isWorkspaceApprovalEnabled } from '../utils/approvalWorkflow.js';
 import { canReviewLeaveRequests } from '../constants/workspacePermissions.js';
+import {
+  notifyLeaveReviewersOfNewRequest,
+  notifyLeaveRequesterOfDecision,
+} from '../utils/leaveNotifications.js';
 
 const normalizeLeaveDate = (value) => {
   if (!value) return undefined;
@@ -34,9 +38,11 @@ function canReviewLeave(req) {
   return canReviewLeaveRequests(req.dataScope?.role, req.dataScope?.permissions);
 }
 
+/** Workspace leave always starts pending until an admin/HR approves. */
 function getInitialLeaveStatus(req) {
-  if (!isWorkspaceApprovalEnabled(req)) return 'approved';
-  return canReviewLeave(req) ? 'approved' : 'pending';
+  if (isWorkspaceApprovalEnabled(req)) return 'pending';
+  // Personal mode has no separate admin approver.
+  return 'approved';
 }
 
 function buildLeaveListQuery(req, extra = {}) {
@@ -180,6 +186,14 @@ export const createLeaveRequest = async (req, res) => {
     });
 
     await leave.save();
+
+    if (status === 'pending' && leave.workspaceId) {
+      void notifyLeaveReviewersOfNewRequest(leave, {
+        workspaceId: leave.workspaceId,
+        actorUserId: userId,
+      });
+    }
+
     res.status(201).json({ data: formatLeaveRequest(leave) });
   } catch (error) {
     console.error('Error creating leave request:', error);
@@ -205,6 +219,11 @@ export const approveLeaveRequest = async (req, res) => {
     leave.reviewedAt = new Date();
     leave.rejectionNote = undefined;
     await leave.save();
+
+    void notifyLeaveRequesterOfDecision(leave, {
+      actorUserId: req.user._id,
+      decision: 'approved',
+    });
 
     res.json({ data: formatLeaveRequest(leave) });
   } catch (error) {
@@ -235,6 +254,11 @@ export const rejectLeaveRequest = async (req, res) => {
     leave.reviewedAt = new Date();
     leave.rejectionNote = rejectionNote ? String(rejectionNote).trim().slice(0, 500) : undefined;
     await leave.save();
+
+    void notifyLeaveRequesterOfDecision(leave, {
+      actorUserId: req.user._id,
+      decision: 'rejected',
+    });
 
     res.json({ data: formatLeaveRequest(leave) });
   } catch (error) {

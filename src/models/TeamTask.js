@@ -65,6 +65,18 @@ const teamTaskSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    projectId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Project',
+      default: null,
+      index: true,
+    },
+    milestoneId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ProjectMilestone',
+      default: null,
+      index: true,
+    },
     workspaceId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Workspace',
@@ -77,6 +89,8 @@ const teamTaskSchema = new mongoose.Schema(
 
 teamTaskSchema.index({ userId: 1, assigneeId: 1, status: 1 });
 teamTaskSchema.index({ userId: 1, monthKey: 1 });
+teamTaskSchema.index({ userId: 1, projectId: 1, status: 1 });
+teamTaskSchema.index({ workspaceId: 1, projectId: 1, status: 1 });
 
 const TeamTask = mongoose.model('TeamTask', teamTaskSchema);
 

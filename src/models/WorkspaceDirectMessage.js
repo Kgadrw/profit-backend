@@ -1,5 +1,35 @@
 import mongoose from 'mongoose';
 
+const replyToSchema = new mongoose.Schema(
+  {
+    messageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+    },
+    senderUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    senderName: {
+      type: String,
+      trim: true,
+      default: 'User',
+    },
+    body: {
+      type: String,
+      trim: true,
+      maxlength: 280,
+      default: '',
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false },
+);
+
 const workspaceDirectMessageSchema = new mongoose.Schema(
   {
     conversationId: {
@@ -35,6 +65,10 @@ const workspaceDirectMessageSchema = new mongoose.Schema(
       trim: true,
       maxlength: 4000,
       default: '',
+    },
+    replyTo: {
+      type: replyToSchema,
+      default: undefined,
     },
     attachments: [
       {

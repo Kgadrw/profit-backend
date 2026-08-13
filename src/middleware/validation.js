@@ -336,6 +336,22 @@ export const validateSale = [
     .optional()
     .trim()
     .isIn(['cash', 'card', 'momo', 'airtel', 'transfer']).withMessage('Invalid payment method'),
+
+  body('clientId')
+    .optional({ nullable: true, checkFalsy: true })
+    .custom((value) => {
+      if (value === null || value === '' || value === undefined) return true;
+      const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+      if (!objectIdRegex.test(String(value))) {
+        throw new Error('Invalid client ID format');
+      }
+      return true;
+    }),
+
+  body('buyerName')
+    .optional({ nullable: true })
+    .trim()
+    .isLength({ max: 200 }).withMessage('Buyer name must not exceed 200 characters'),
   
   handleValidationErrors
 ];

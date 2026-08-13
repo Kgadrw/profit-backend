@@ -51,6 +51,72 @@ async function enrichMessagesWithSenderProfiles(messages) {
   });
 }
 
+function buildReplyToSnapshot(sourceMessage) {
+  if (!sourceMessage) return null;
+  const deleted = Boolean(sourceMessage.deletedAt);
+  return {
+    messageId: sourceMessage._id,
+    senderUserId: sourceMessage.senderUserId,
+    senderName: sourceMessage.senderName || 'User',
+    body: deleted ? '' : String(sourceMessage.body || '').trim().slice(0, 280),
+    deletedAt: sourceMessage.deletedAt || null,
+  };
+}
+
+function normalizeClientReplyTo(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const messageId = raw.messageId || raw._id;
+  if (!messageId || !mongoose.Types.ObjectId.isValid(String(messageId))) return null;
+  const senderUserId = raw.senderUserId ? String(raw.senderUserId) : '';
+  return {
+    messageId: new mongoose.Types.ObjectId(String(messageId)),
+    senderUserId:
+      senderUserId && mongoose.Types.ObjectId.isValid(senderUserId)
+        ? new mongoose.Types.ObjectId(senderUserId)
+        : null,
+    senderName: String(raw.senderName || 'User').trim() || 'User',
+    body: String(raw.body || '').trim().slice(0, 280),
+    deletedAt: raw.deletedAt ? new Date(raw.deletedAt) : null,
+  };
+}
+
+function serializeWorkspaceMessage(message) {
+  const replyTo = message.replyTo?.messageId
+    ? {
+        messageId: String(message.replyTo.messageId),
+        senderUserId: message.replyTo.senderUserId
+          ? String(message.replyTo.senderUserId)
+          : null,
+        senderName: message.replyTo.senderName || 'User',
+        body: message.replyTo.body || '',
+        deletedAt: message.replyTo.deletedAt || null,
+      }
+    : null;
+
+  return {
+    ...message,
+    _id: String(message._id),
+    workspaceId: String(message.workspaceId),
+    senderUserId: String(message.senderUserId),
+    replyTo,
+  };
+}
+
+async function resolveGroupReplyTo(workspaceId, replyToMessageId) {
+  if (!replyToMessageId) return null;
+  if (!mongoose.Types.ObjectId.isValid(String(replyToMessageId))) {
+    return null;
+  }
+
+  const source = await WorkspaceMessage.findOne({
+    _id: replyToMessageId,
+    workspaceId,
+  }).lean();
+
+  if (!source) return null;
+  return buildReplyToSnapshot(source);
+}
+
 async function buildDeliveredTo(workspaceId, senderUserId, deliveredAt = new Date()) {
   const memberUsers = await getWorkspaceMemberUsers(workspaceId);
   return memberUsers
@@ -134,7 +200,7 @@ export const getWorkspaceMessages = async (req, res) => {
       WorkspaceMessage.find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
-        .select('workspaceId senderUserId senderName senderProfilePictureUrl body mentionAll mentions deliveredTo readBy editedAt deletedAt createdAt')
+        .select('workspaceId senderUserId senderName senderProfilePictureUrl body replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt createdAt')
         .lean(),
     ]);
 
@@ -142,12 +208,16 @@ export const getWorkspaceMessages = async (req, res) => {
     const enriched = await enrichMessagesWithSenderProfiles(chronological);
     const needsEnrich = enriched.some((message) => !message.deliveredTo?.length);
     if (!needsEnrich) {
-      res.json({ data: enriched });
+      res.json({ data: enriched.map((row) => serializeWorkspaceMessage(row)) });
       return;
     }
 
     const memberUsers = await getWorkspaceMemberUsers(workspaceId);
-    res.json({ data: enrichMessagesDelivery(enriched, memberUsers) });
+    res.json({
+      data: enrichMessagesDelivery(enriched, memberUsers).map((row) =>
+        serializeWorkspaceMessage(row),
+      ),
+    });
   } catch (error) {
     console.error('Get workspace messages error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to load messages' });
@@ -157,7 +227,7 @@ export const getWorkspaceMessages = async (req, res) => {
 export const sendWorkspaceMessage = async (req, res) => {
   try {
     const { workspaceId } = req.params;
-    const { body } = req.body;
+    const { body, replyToMessageId, replyTo: clientReplyTo } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
       return res.status(400).json({ error: 'Invalid workspace id' });
@@ -173,15 +243,17 @@ export const sendWorkspaceMessage = async (req, res) => {
       return res.status(401).json({ error: 'User not found. Please login again.' });
     }
 
-    const [, deliveredTo, memberUsers] = await Promise.all([
+    const [, deliveredTo, memberUsers, resolvedReplyTo] = await Promise.all([
       assertWorkspaceMember(workspaceId, user._id),
       buildDeliveredTo(workspaceId, user._id),
       getWorkspaceMemberUsers(workspaceId),
+      resolveGroupReplyTo(workspaceId, replyToMessageId),
     ]);
 
+    const replyTo = normalizeClientReplyTo(clientReplyTo) || resolvedReplyTo;
     const { mentionAll, mentions } = resolveMentionsFromBody(trimmedBody, memberUsers, user._id);
 
-    const message = await WorkspaceMessage.create({
+    const createData = {
       workspaceId,
       senderUserId: user._id,
       senderName: user.name || 'User',
@@ -191,9 +263,30 @@ export const sendWorkspaceMessage = async (req, res) => {
       mentions,
       deliveredTo,
       readBy: [],
-    });
+    };
+    if (replyTo?.messageId) {
+      createData.replyTo = {
+        messageId: replyTo.messageId,
+        senderUserId: replyTo.senderUserId || null,
+        senderName: replyTo.senderName || 'User',
+        body: replyTo.body || '',
+        deletedAt: replyTo.deletedAt || null,
+      };
+    }
 
-    const payload = message.toObject();
+    const created = await WorkspaceMessage.create(createData);
+    const saved = (await WorkspaceMessage.findById(created._id).lean()) || created.toObject();
+
+    const payload = serializeWorkspaceMessage(saved);
+    if (!payload.replyTo?.messageId && replyTo?.messageId) {
+      payload.replyTo = {
+        messageId: String(replyTo.messageId),
+        senderUserId: replyTo.senderUserId ? String(replyTo.senderUserId) : null,
+        senderName: replyTo.senderName || 'User',
+        body: replyTo.body || '',
+        deletedAt: replyTo.deletedAt || null,
+      };
+    }
     await broadcastToWorkspace(workspaceId, 'workspace-chat:message', payload);
 
     const workspace = await Workspace.findById(workspaceId).select('name').lean();
@@ -215,7 +308,7 @@ export const sendWorkspaceMessage = async (req, res) => {
       console.error('Workspace chat in-app notification error:', error);
     });
 
-    res.status(201).json({ data: message });
+    res.status(201).json({ data: payload });
   } catch (error) {
     console.error('Send workspace message error:', error);
     if (error.name === 'ValidationError') {

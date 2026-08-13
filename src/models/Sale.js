@@ -83,6 +83,19 @@ const saleSchema = new mongoose.Schema({
     enum: ['cash', 'card', 'momo', 'airtel', 'transfer'],
     default: 'cash',
   },
+  /** Optional link to a finance customer (Client). */
+  clientId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Client',
+    default: null,
+    index: true,
+  },
+  /** Buyer display name — from selected customer or free-text. */
+  buyerName: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
