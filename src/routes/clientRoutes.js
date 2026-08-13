@@ -1,4 +1,3 @@
-// Client Routes
 import express from 'express';
 import {
   getClients,
@@ -7,6 +6,7 @@ import {
   createClient,
   updateClient,
   deleteClient,
+  mergeDuplicateClients,
 } from '../controllers/clientController.js';
 import { apiLimiter } from '../middleware/security.js';
 import { validateObjectId } from '../middleware/validation.js';
@@ -16,13 +16,13 @@ import { resolveWorkspaceContext } from '../middleware/workspaceContext.js';
 
 const router = express.Router();
 
-// All client routes require authentication and rate limiting
 router.use(authenticateUser);
 router.use(resolveWorkspaceContext);
 router.use(requirePlusAccess);
 router.use(apiLimiter);
 
 router.get('/', getClients);
+router.post('/merge-duplicates', mergeDuplicateClients);
 router.get('/:id/activity', validateObjectId, getClientActivity);
 router.get('/:id', validateObjectId, getClient);
 router.post('/', createClient);

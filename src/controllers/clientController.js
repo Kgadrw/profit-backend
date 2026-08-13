@@ -1,6 +1,7 @@
 import Client from '../models/Client.js';
 import Invoice from '../models/Invoice.js';
 import Income from '../models/Income.js';
+import Sale from '../models/Sale.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { canAccessWorkspacePage } from '../constants/workspacePermissions.js';
@@ -21,6 +22,22 @@ function assertClientsReadAccess(req) {
   const error = new Error('You do not have access to customers in this workspace');
   error.statusCode = 403;
   throw error;
+}
+
+function normalizeName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function richnessScore(client) {
+  let score = 0;
+  if (client.email) score += 2;
+  if (client.phone) score += 2;
+  if (client.notes) score += 1;
+  if (client.businessType && client.businessType !== 'General') score += 1;
+  return score;
 }
 
 export const getClients = async (req, res) => {
@@ -174,6 +191,98 @@ export const getClientActivity = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching client activity:', error);
+    handleScopeError(res, error);
+  }
+};
+
+/**
+ * Merge customers that share the same normalized name into a single record.
+ * Keeps the richest/oldest profile and reassigns sales, invoices, and incomes.
+ */
+export const mergeDuplicateClients = async (req, res) => {
+  try {
+    assertPageAccess(req, 'finance');
+    const scope = buildListQuery(req);
+    const clients = await Client.find(scope).sort({ createdAt: 1 }).lean();
+
+    const groups = new Map();
+    for (const client of clients) {
+      if (client.clientType === 'worker') continue;
+      const key = normalizeName(client.name);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(client);
+    }
+
+    let mergedGroups = 0;
+    let removedCount = 0;
+
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+
+      const keep = [...group].sort((a, b) => {
+        const scoreDiff = richnessScore(b) - richnessScore(a);
+        if (scoreDiff !== 0) return scoreDiff;
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      })[0];
+
+      const mergeIds = group
+        .map((c) => c._id)
+        .filter((id) => String(id) !== String(keep._id));
+
+      if (!mergeIds.length) continue;
+
+      // Fill missing contact fields on the keeper from duplicates.
+      const keepDoc = await Client.findOne({ ...scope, _id: keep._id });
+      if (!keepDoc) continue;
+
+      for (const dup of group) {
+        if (String(dup._id) === String(keep._id)) continue;
+        if (!keepDoc.email && dup.email) keepDoc.email = dup.email;
+        if (!keepDoc.phone && dup.phone) keepDoc.phone = dup.phone;
+        if (!keepDoc.notes && dup.notes) keepDoc.notes = dup.notes;
+        if (
+          (!keepDoc.businessType || keepDoc.businessType === 'General') &&
+          dup.businessType
+        ) {
+          keepDoc.businessType = dup.businessType;
+        }
+      }
+      await keepDoc.save();
+
+      await Promise.all([
+        Sale.updateMany({ ...scope, clientId: { $in: mergeIds } }, { $set: { clientId: keep._id } }),
+        Invoice.updateMany(
+          { ...scope, clientId: { $in: mergeIds } },
+          {
+            $set: {
+              clientId: keep._id,
+              clientName: keepDoc.name,
+              clientEmail: keepDoc.email || undefined,
+              clientPhone: keepDoc.phone || undefined,
+            },
+          },
+        ),
+        Income.updateMany({ ...scope, clientId: { $in: mergeIds } }, { $set: { clientId: keep._id } }),
+      ]);
+
+      await Client.deleteMany({ ...scope, _id: { $in: mergeIds } });
+      mergedGroups += 1;
+      removedCount += mergeIds.length;
+    }
+
+    res.json({
+      data: {
+        mergedGroups,
+        removedCount,
+      },
+      message:
+        removedCount > 0
+          ? `Merged ${removedCount} duplicate customer(s) into ${mergedGroups} profile(s).`
+          : 'No duplicate customers found.',
+    });
+  } catch (error) {
+    console.error('Error merging duplicate clients:', error);
     handleScopeError(res, error);
   }
 };
