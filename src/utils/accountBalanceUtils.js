@@ -4,18 +4,32 @@ import AccountTransfer from '../models/AccountTransfer.js';
 import Payroll from '../models/Payroll.js';
 import { startOfDay, endOfDay } from './budgetPeriodUtils.js';
 
+/**
+ * Computed account balance:
+ * openingBalance
+ * + incomes credited to account
+ * + expenses that credit this account (creditedAccountId)
+ * + transfers in
+ * − expenses deducted from account (accountId)
+ * − transfers out
+ * − paid payroll deducted from account
+ *
+ * Opening balance may be negative (debt). Credits reduce debt before going positive.
+ */
 export async function computeBalanceAsOf(accountId, scopeMatch, asOfDate = null) {
   const end = asOfDate ? endOfDay(asOfDate) : null;
 
   const incomeMatch = { ...scopeMatch, accountId };
-  const expenseMatch = { ...scopeMatch, accountId };
+  const expenseDebitMatch = { ...scopeMatch, accountId };
+  const expenseCreditMatch = { ...scopeMatch, creditedAccountId: accountId };
   const transferInMatch = { ...scopeMatch, toAccountId: accountId };
   const transferOutMatch = { ...scopeMatch, fromAccountId: accountId };
   const payrollMatch = { ...scopeMatch, accountId, status: 'paid' };
 
   if (end) {
     incomeMatch.date = { $lte: end };
-    expenseMatch.date = { $lte: end };
+    expenseDebitMatch.date = { $lte: end };
+    expenseCreditMatch.date = { $lte: end };
     transferInMatch.transferDate = { $lte: end };
     transferOutMatch.transferDate = { $lte: end };
     payrollMatch.paymentDate = { $lte: end };
@@ -29,18 +43,31 @@ export async function computeBalanceAsOf(accountId, scopeMatch, asOfDate = null)
     return 0;
   }
 
-  const [incomeRows, expenseRows, transferInRows, transferOutRows, payrollRows] = await Promise.all([
+  const [
+    incomeRows,
+    expenseDebitRows,
+    expenseCreditRows,
+    transferInRows,
+    transferOutRows,
+    payrollRows,
+  ] = await Promise.all([
     Income.aggregate([{ $match: incomeMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    Expense.aggregate([{ $match: expenseMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    Expense.aggregate([{ $match: expenseDebitMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    Expense.aggregate([{ $match: expenseCreditMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     AccountTransfer.aggregate([{ $match: transferInMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     AccountTransfer.aggregate([{ $match: transferOutMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     Payroll.aggregate([{ $match: payrollMatch }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
   ]);
 
   const opening = Number(account.openingBalance) || 0;
-  const inflow = (incomeRows[0]?.total || 0) + (transferInRows[0]?.total || 0);
+  const inflow =
+    (incomeRows[0]?.total || 0) +
+    (expenseCreditRows[0]?.total || 0) +
+    (transferInRows[0]?.total || 0);
   const outflow =
-    (expenseRows[0]?.total || 0) + (transferOutRows[0]?.total || 0) + (payrollRows[0]?.total || 0);
+    (expenseDebitRows[0]?.total || 0) +
+    (transferOutRows[0]?.total || 0) +
+    (payrollRows[0]?.total || 0);
   return opening + inflow - outflow;
 }
 

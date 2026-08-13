@@ -102,12 +102,16 @@ export async function notifyWorkspaceChatPush({
     body: `${replyPrefix}${truncateBody(message.body)}`,
     icon: message.senderProfilePictureUrl || '/chat.png',
     badge: '/chat.png',
-    tag: `workspace-chat-${message._id}`,
+    tag: `workspace-chat-${workspaceId}`,
     silent: false,
+    requireInteraction: true,
+    renotify: true,
     data: {
       action: 'open_workspace_chat',
       workspaceId: String(workspaceId),
       messageId: String(message._id),
+      href: '/messages/group',
+      tag: `workspace-chat-${workspaceId}`,
     },
   };
 
@@ -126,19 +130,27 @@ export async function notifyDirectMessagePush({
   const replyPrefix = message.replyTo?.messageId
     ? `↩ ${message.replyTo.senderName || 'Message'}: ${truncateBody(message.replyTo.body || '', 60)}\n`
     : '';
+  const conversationId = String(message.conversationId || '');
+  const tag = conversationId ? `workspace-dm-${conversationId}` : `workspace-dm-user-${message.senderUserId}`;
+  const otherUserId = String(message.senderUserId);
+  const href = `/messages/${otherUserId}`;
   const payload = {
     title: sender,
     body: `${replyPrefix}${buildDirectMessagePreview(message)}`,
     icon: message.senderProfilePictureUrl || '/chat.png',
     badge: '/chat.png',
-    tag: `workspace-dm-${message._id}`,
+    tag,
     silent: false,
+    requireInteraction: true,
+    renotify: true,
     data: {
       action: 'open_direct_chat',
       workspaceId: String(workspaceId),
-      conversationId: String(message.conversationId),
-      otherUserId: String(message.senderUserId),
+      conversationId,
+      otherUserId,
       messageId: String(message._id),
+      href,
+      tag,
     },
   };
 

@@ -26,7 +26,7 @@ const accountSchema = new mongoose.Schema(
     openingBalance: {
       type: Number,
       default: 0,
-      min: [0, 'Opening balance cannot be negative'],
+      // Negative allowed: accounts can start in debt and climb out as they are credited.
     },
     openingBalanceDate: {
       type: Date,

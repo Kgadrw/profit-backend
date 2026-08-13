@@ -63,7 +63,7 @@ export const createAccount = async (req, res) => {
       type: type || 'cash',
       institution: institution ? institution.trim() : undefined,
       accountNumber: accountNumber ? accountNumber.trim() : undefined,
-      openingBalance: Number(openingBalance) || 0,
+      openingBalance: Number.isFinite(Number(openingBalance)) ? Number(openingBalance) : 0,
       openingBalanceDate: openingBalanceDate ? new Date(openingBalanceDate) : new Date(),
       isDefault: Boolean(isDefault),
       notes: notes ? notes.trim() : undefined,
@@ -93,7 +93,10 @@ export const updateAccount = async (req, res) => {
     if (type !== undefined) account.type = type;
     if (institution !== undefined) account.institution = institution ? institution.trim() : undefined;
     if (accountNumber !== undefined) account.accountNumber = accountNumber ? accountNumber.trim() : undefined;
-    if (openingBalance !== undefined) account.openingBalance = Number(openingBalance) || 0;
+    if (openingBalance !== undefined) {
+      const parsedOpening = Number(openingBalance);
+      account.openingBalance = Number.isFinite(parsedOpening) ? parsedOpening : 0;
+    }
     if (openingBalanceDate !== undefined) {
       account.openingBalanceDate = openingBalanceDate ? new Date(openingBalanceDate) : account.openingBalanceDate;
     }
@@ -140,9 +143,10 @@ export const getAccountActivity = async (req, res) => {
       return res.status(404).json({ error: 'Account not found' });
     }
 
-    const [incomes, expenses, transfersIn, transfersOut, balance] = await Promise.all([
+    const [incomes, expensesDebited, expensesCredited, transfersIn, transfersOut, balance] = await Promise.all([
       Income.find({ ...scope, accountId: account._id }).sort({ date: -1 }).limit(50).lean(),
       Expense.find({ ...scope, accountId: account._id }).sort({ date: -1 }).limit(50).lean(),
+      Expense.find({ ...scope, creditedAccountId: account._id }).sort({ date: -1 }).limit(50).lean(),
       AccountTransfer.find({ ...scope, toAccountId: account._id }).sort({ transferDate: -1 }).limit(25).lean(),
       AccountTransfer.find({ ...scope, fromAccountId: account._id }).sort({ transferDate: -1 }).limit(25).lean(),
       computeBalance(req, account._id),
@@ -152,7 +156,8 @@ export const getAccountActivity = async (req, res) => {
       data: {
         account: { ...account.toObject(), balance },
         incomes,
-        expenses,
+        expenses: expensesDebited,
+        expensesCredited,
         transfersIn,
         transfersOut,
       },
@@ -190,10 +195,7 @@ export const createTransfer = async (req, res) => {
       return res.status(404).json({ error: 'Account not found' });
     }
 
-    const fromBalance = await computeBalance(req, fromAccount._id);
-    if (fromBalance !== null && fromBalance < parsedAmount) {
-      return res.status(400).json({ error: 'Insufficient balance in source account' });
-    }
+    // Allow transfers even when the source is overdrawn / in debt — balances stay real numbers.
 
     const transfer = new AccountTransfer({
       fromAccountId: fromAccount._id,
@@ -240,9 +242,10 @@ export const getAccountReconciliation = async (req, res) => {
     const { start, end } = parseStatementDates(req.query.startDate, req.query.endDate);
     const dateRange = { $gte: start, $lte: end };
 
-    const [incomes, expenses, payrolls, transfersIn, transfersOut, openingBalance, closingBalance] = await Promise.all([
+    const [incomes, expensesDebited, expensesCredited, payrolls, transfersIn, transfersOut, openingBalance, closingBalance] = await Promise.all([
       Income.find({ ...scope, accountId: account._id, date: dateRange }).sort({ date: -1 }).lean(),
       Expense.find({ ...scope, accountId: account._id, date: dateRange }).sort({ date: -1 }).lean(),
+      Expense.find({ ...scope, creditedAccountId: account._id, date: dateRange }).sort({ date: -1 }).lean(),
       Payroll.find({ ...scope, accountId: account._id, status: 'paid', paymentDate: dateRange }).sort({ paymentDate: -1 }).lean(),
       AccountTransfer.find({ ...scope, toAccountId: account._id, transferDate: dateRange }).sort({ transferDate: -1 }).lean(),
       AccountTransfer.find({ ...scope, fromAccountId: account._id, transferDate: dateRange }).sort({ transferDate: -1 }).lean(),
@@ -261,13 +264,23 @@ export const getAccountReconciliation = async (req, res) => {
         reconciled: Boolean(row.reconciledAt),
         reconciledAt: row.reconciledAt,
       })),
-      ...expenses.map((row) => ({
+      ...expensesDebited.map((row) => ({
         id: String(row._id),
         type: 'expense',
         date: row.date,
         description: row.title,
         amount: row.amount,
         direction: 'out',
+        reconciled: Boolean(row.reconciledAt),
+        reconciledAt: row.reconciledAt,
+      })),
+      ...expensesCredited.map((row) => ({
+        id: `${String(row._id)}-credit`,
+        type: 'expense_credit',
+        date: row.date,
+        description: row.title,
+        amount: row.amount,
+        direction: 'in',
         reconciled: Boolean(row.reconciledAt),
         reconciledAt: row.reconciledAt,
       })),
