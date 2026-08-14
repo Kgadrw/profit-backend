@@ -47,6 +47,47 @@ function normalizeAttachments(rawAttachments) {
     .filter((item) => item.url && item.fileName);
 }
 
+function normalizePoll(rawPoll) {
+  if (!rawPoll || typeof rawPoll !== 'object') return null;
+  const question = String(rawPoll.question || '').trim().slice(0, 500);
+  const options = Array.isArray(rawPoll.options)
+    ? rawPoll.options
+        .map((option) => String(typeof option === 'string' ? option : option?.text || '').trim().slice(0, 280))
+        .filter(Boolean)
+    : [];
+  if (!question || options.length < 2 || options.length > 10 || new Set(options.map((option) => option.toLowerCase())).size !== options.length) {
+    return null;
+  }
+  return { question, options: options.map((text) => ({ text, voterIds: [] })) };
+}
+
+function serializePoll(poll) {
+  if (!poll) return null;
+  return {
+    question: poll.question,
+    options: (poll.options || []).map((option) => ({
+      text: option.text,
+      voteCount: (option.voterIds || []).length,
+      voterIds: (option.voterIds || []).map((id) => String(id)),
+    })),
+  };
+}
+
+function serializeReactions(reactions) {
+  return (reactions || [])
+    .filter((reaction) => reaction?.emoji && reaction.userIds?.length)
+    .map((reaction) => ({
+      emoji: String(reaction.emoji),
+      userIds: (reaction.userIds || []).map((id) => String(id)),
+    }));
+}
+
+function normalizeReactionEmoji(rawEmoji) {
+  const emoji = String(rawEmoji || '').trim();
+  if (!emoji || emoji.length > 32 || [...emoji].length > 8) return null;
+  return emoji;
+}
+
 async function assertWorkspaceMember(workspaceId, userId) {
   const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
   if (!membership) {
@@ -139,6 +180,8 @@ function serializeWorkspaceMessage(message) {
     workspaceId: String(message.workspaceId),
     senderUserId: String(message.senderUserId),
     replyTo,
+    poll: serializePoll(message.poll),
+    reactions: serializeReactions(message.reactions),
     expiresAt: message.expiresAt ? new Date(message.expiresAt).toISOString() : null,
   };
 }
@@ -248,7 +291,7 @@ export const getWorkspaceMessages = async (req, res) => {
       WorkspaceMessage.find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
-        .select('workspaceId senderUserId senderName senderProfilePictureUrl body attachments replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt expiresAt createdAt')
+        .select('workspaceId senderUserId senderName senderProfilePictureUrl body attachments poll reactions replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt expiresAt createdAt')
         .lean(),
     ]);
 
@@ -275,7 +318,7 @@ export const getWorkspaceMessages = async (req, res) => {
 export const sendWorkspaceMessage = async (req, res) => {
   try {
     const { workspaceId } = req.params;
-    const { body, replyToMessageId, replyTo: clientReplyTo, attachments: rawAttachments } =
+    const { body, replyToMessageId, replyTo: clientReplyTo, attachments: rawAttachments, poll: rawPoll } =
       req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
@@ -284,8 +327,12 @@ export const sendWorkspaceMessage = async (req, res) => {
 
     const trimmedBody = String(body || '').trim();
     const attachments = normalizeAttachments(rawAttachments);
-    if (!trimmedBody && !attachments.length) {
-      return res.status(400).json({ error: 'Message or attachment is required' });
+    const poll = rawPoll === undefined ? null : normalizePoll(rawPoll);
+    if (rawPoll !== undefined && !poll) {
+      return res.status(400).json({ error: 'Poll requires a question and 2-10 unique options' });
+    }
+    if (!trimmedBody && !attachments.length && !poll) {
+      return res.status(400).json({ error: 'Message, attachment, or poll is required' });
     }
 
     const user = await User.findById(req.user._id).select('name profilePictureUrl');
@@ -322,6 +369,7 @@ export const sendWorkspaceMessage = async (req, res) => {
       senderProfilePictureUrl: user.profilePictureUrl || null,
       body: trimmedBody,
       attachments,
+      ...(poll ? { poll } : {}),
       mentionAll,
       mentions,
       deliveredTo,
@@ -378,6 +426,72 @@ export const sendWorkspaceMessage = async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to send message' });
+  }
+};
+
+export const voteWorkspaceMessagePoll = async (req, res) => {
+  try {
+    const { workspaceId, messageId } = req.params;
+    const optionIndex = Number(req.body?.optionIndex);
+    const userId = req.user._id;
+    if (!mongoose.Types.ObjectId.isValid(workspaceId) || !mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: 'Invalid workspace or message id' });
+    }
+    await assertWorkspaceMember(workspaceId, userId);
+    const message = await WorkspaceMessage.findOne({ _id: messageId, workspaceId });
+    if (!message || message.deletedAt) return res.status(404).json({ error: 'Message not found' });
+    if (!message.poll || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= message.poll.options.length) {
+      return res.status(400).json({ error: 'Invalid poll option' });
+    }
+    for (const option of message.poll.options) {
+      option.voterIds = option.voterIds.filter((id) => String(id) !== String(userId));
+    }
+    message.poll.options[optionIndex].voterIds.push(userId);
+    message.markModified('poll');
+    await message.save();
+    const payload = serializeWorkspaceMessage(message.toObject());
+    await broadcastToWorkspace(workspaceId, 'workspace-chat:edit', payload);
+    res.json({ data: payload });
+  } catch (error) {
+    console.error('Vote workspace poll error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to vote on poll' });
+  }
+};
+
+export const toggleWorkspaceMessageReaction = async (req, res) => {
+  try {
+    const { workspaceId, messageId } = req.params;
+    const userId = req.user._id;
+    const emoji = normalizeReactionEmoji(req.body?.emoji);
+    if (!mongoose.Types.ObjectId.isValid(workspaceId) || !mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: 'Invalid workspace or message id' });
+    }
+    if (!emoji) return res.status(400).json({ error: 'A valid emoji is required' });
+    await assertWorkspaceMember(workspaceId, userId);
+    const message = await WorkspaceMessage.findOne({ _id: messageId, workspaceId });
+    if (!message || message.deletedAt || (message.expiresAt && message.expiresAt <= new Date())) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    const reactions = Array.isArray(message.reactions) ? message.reactions : [];
+    const reaction = reactions.find((row) => row.emoji === emoji);
+    if (reaction) {
+      const alreadyReacted = reaction.userIds.some((id) => String(id) === String(userId));
+      reaction.userIds = alreadyReacted
+        ? reaction.userIds.filter((id) => String(id) !== String(userId))
+        : [...reaction.userIds, userId];
+    } else {
+      reactions.push({ emoji, userIds: [userId] });
+    }
+    message.reactions = reactions.filter((row) => row.userIds?.length);
+    message.markModified('reactions');
+    await message.save();
+    const payload = serializeWorkspaceMessage(message.toObject());
+    await broadcastToWorkspace(workspaceId, 'workspace-chat:reaction', payload);
+    res.json({ data: payload });
+  } catch (error) {
+    console.error('Toggle workspace message reaction error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to react to message' });
   }
 };
 
@@ -531,6 +645,8 @@ export const deleteWorkspaceMessage = async (req, res) => {
     message.deletedAt = new Date();
     message.body = '';
     message.attachments = [];
+    message.poll = undefined;
+    message.reactions = [];
     message.mentionAll = false;
     message.mentions = [];
     await message.save();
@@ -670,6 +786,8 @@ export async function purgeExpiredGroupMessages() {
         deletedAt: now,
         body: '',
         attachments: [],
+        poll: undefined,
+        reactions: [],
         mentionAll: false,
         mentions: [],
       },
@@ -679,6 +797,8 @@ export async function purgeExpiredGroupMessages() {
       deletedAt: now,
       body: '',
       attachments: [],
+      poll: undefined,
+      reactions: [],
       mentionAll: false,
       mentions: [],
     });

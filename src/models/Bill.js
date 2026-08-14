@@ -51,6 +51,16 @@ const billSchema = new mongoose.Schema(
       trim: true,
       maxlength: [1000],
     },
+    isRecurring: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    recurrenceFrequency: {
+      type: String,
+      enum: ['weekly', 'monthly', 'yearly', ''],
+      default: '',
+    },
     paymentMethod: {
       type: String,
       trim: true,

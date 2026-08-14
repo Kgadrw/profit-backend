@@ -49,6 +49,22 @@ const teamTaskSchema = new mongoose.Schema(
     dueDate: {
       type: Date,
     },
+    reminders: {
+      type: [
+        {
+          offsetMinutes: {
+            type: Number,
+            min: [0, 'Reminder offset cannot be negative'],
+            required: true,
+          },
+          sentAt: {
+            type: Date,
+            default: null,
+          },
+        },
+      ],
+      default: [],
+    },
     monthKey: {
       type: String,
       trim: true,

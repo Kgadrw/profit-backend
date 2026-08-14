@@ -2,6 +2,7 @@ import express from 'express';
 import {
   getCorporateCalendarSummary,
   getCorporateCalendarFeed,
+  getCorporateCalendarReminders,
   getCompanyAnnouncements,
   createCompanyAnnouncement,
   updateCompanyAnnouncement,
@@ -22,6 +23,7 @@ router.use(apiLimiter);
 
 router.get('/summary', getCorporateCalendarSummary);
 router.get('/feed', getCorporateCalendarFeed);
+router.get('/reminders', getCorporateCalendarReminders);
 router.get('/announcements', getCompanyAnnouncements);
 router.post('/announcements', createCompanyAnnouncement);
 router.put('/announcements/:id', validateObjectId, updateCompanyAnnouncement);

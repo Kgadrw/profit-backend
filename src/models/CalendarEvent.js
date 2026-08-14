@@ -45,6 +45,22 @@ const calendarEventSchema = new mongoose.Schema({
     min: [0, 'Reminder minutes cannot be negative'],
     default: 0,
   },
+  reminders: {
+    type: [
+      {
+        offsetMinutes: {
+          type: Number,
+          min: [0, 'Reminder offset cannot be negative'],
+          required: true,
+        },
+        sentAt: {
+          type: Date,
+          default: null,
+        },
+      },
+    ],
+    default: [],
+  },
   clientId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Client',

@@ -96,6 +96,16 @@ const saleSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  /**
+   * Client-generated idempotency key. A retry of the same sale request must
+   * return this sale instead of deducting stock and creating another record.
+   */
+  clientRequestId: {
+    type: String,
+    trim: true,
+    default: null,
+    index: true,
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -140,6 +150,10 @@ saleSchema.index({ userId: 1, workerId: 1, date: -1 });
 saleSchema.index({ userId: 1, serviceId: 1 });
 saleSchema.index({ userId: 1, inventoryId: 1, date: -1 });
 saleSchema.index({ workspaceId: 1, date: -1 });
+saleSchema.index(
+  { userId: 1, clientRequestId: 1 },
+  { unique: true, partialFilterExpression: { clientRequestId: { $type: 'string' } } },
+);
 
 const Sale = mongoose.model('Sale', saleSchema);
 

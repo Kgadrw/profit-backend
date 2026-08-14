@@ -2,6 +2,22 @@ import CalendarEvent from '../models/CalendarEvent.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 
+const DEFAULT_REMINDER_OFFSETS = [1440, 60];
+
+function normalizeReminders(value, fallbackToDefaults = false) {
+  if (value === undefined) {
+    return fallbackToDefaults
+      ? DEFAULT_REMINDER_OFFSETS.map((offsetMinutes) => ({ offsetMinutes }))
+      : undefined;
+  }
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((item) => Number(typeof item === 'object' ? item.offsetMinutes : item))
+    .filter((offset) => Number.isFinite(offset) && offset >= 0))]
+    .sort((a, b) => b - a)
+    .map((offsetMinutes) => ({ offsetMinutes }));
+}
+
 const parseDateRange = (start, end) => {
   const range = {};
   if (start) {
@@ -70,6 +86,7 @@ export const createCalendarEvent = async (req, res) => {
       color,
       status,
       reminderMinutes,
+      reminders,
       clientId,
       clientName,
     } = req.body;
@@ -92,6 +109,7 @@ export const createCalendarEvent = async (req, res) => {
       color: color?.trim() || '',
       status: status || 'scheduled',
       reminderMinutes: Number(reminderMinutes) || 0,
+      reminders: normalizeReminders(reminders, eventType === 'meeting' || eventType === 'event'),
       clientId: clientId || undefined,
       clientName: clientName?.trim() || '',
       ...buildCreateScope(req),
@@ -123,6 +141,7 @@ export const updateCalendarEvent = async (req, res) => {
       'color',
       'status',
       'reminderMinutes',
+      'reminders',
       'clientId',
       'clientName',
     ];
@@ -135,6 +154,8 @@ export const updateCalendarEvent = async (req, res) => {
         event.allDay = Boolean(req.body.allDay);
       } else if (field === 'reminderMinutes') {
         event.reminderMinutes = Number(req.body.reminderMinutes) || 0;
+      } else if (field === 'reminders') {
+        event.reminders = normalizeReminders(req.body.reminders) || [];
       } else if (typeof req.body[field] === 'string') {
         event[field] = req.body[field].trim();
       } else {

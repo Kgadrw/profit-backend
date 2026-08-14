@@ -1,18 +1,32 @@
 import { v2 as cloudinary } from 'cloudinary';
 
-let configured = false;
+const DEFAULT_UPLOAD_PRESET = 'PROFIT';
+
+function trimEnv(name) {
+  const value = process.env[name];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function getCloudinaryUploadPreset() {
+  return trimEnv('CLOUDINARY_UPLOAD_PRESET') || DEFAULT_UPLOAD_PRESET;
+}
+
+function getCloudinaryAuth() {
+  return {
+    cloud_name: trimEnv('CLOUDINARY_CLOUD_NAME'),
+    api_key: trimEnv('CLOUDINARY_API_KEY'),
+    api_secret: trimEnv('CLOUDINARY_API_SECRET'),
+  };
+}
 
 export function isCloudinaryConfigured() {
-  return Boolean(
-    process.env.CLOUDINARY_CLOUD_NAME &&
-      process.env.CLOUDINARY_API_KEY &&
-      process.env.CLOUDINARY_API_SECRET,
-  );
+  const { cloud_name, api_key, api_secret } = getCloudinaryAuth();
+  return Boolean(cloud_name && api_key && api_secret);
 }
 
 function ensureConfigured() {
-  if (configured) return;
-  if (!isCloudinaryConfigured()) {
+  const auth = getCloudinaryAuth();
+  if (!auth.cloud_name || !auth.api_key || !auth.api_secret) {
     const error = new Error(
       'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
     );
@@ -20,13 +34,22 @@ function ensureConfigured() {
     throw error;
   }
 
+  if (!/^[a-z0-9_-]+$/i.test(auth.cloud_name) || auth.cloud_name.toLowerCase() === 'root') {
+    const error = new Error(
+      `Invalid CLOUDINARY_CLOUD_NAME "${auth.cloud_name}". Use the cloud name from the Cloudinary dashboard (e.g. dgmexpa8v), not Root.`,
+    );
+    error.statusCode = 500;
+    throw error;
+  }
+
   cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
+    cloud_name: auth.cloud_name,
+    api_key: auth.api_key,
+    api_secret: auth.api_secret,
     secure: true,
   });
-  configured = true;
+
+  return auth;
 }
 
 export function isCloudinaryUrl(url) {
@@ -44,23 +67,28 @@ function workspacePublicId(workspaceId) {
 
 /**
  * Upload a profile/workspace image buffer to Cloudinary.
- * Uses a stable public_id so replace/delete is deterministic.
+ * Uses signed upload preset PROFIT (overwrite, no unique filename) and a
+ * stable public_id so replace/delete is deterministic.
  */
 export async function uploadProfileImageBuffer({
   buffer,
   kind,
   ownerId,
-  mimeType,
 }) {
-  ensureConfigured();
+  const auth = ensureConfigured();
 
   const publicId = kind === 'workspace-profile' ? workspacePublicId(ownerId) : profilePublicId(ownerId);
+  const uploadPreset = getCloudinaryUploadPreset();
 
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
+        ...auth,
+        upload_preset: uploadPreset,
         public_id: publicId,
         overwrite: true,
+        unique_filename: false,
+        use_filename: false,
         invalidate: true,
         resource_type: 'image',
         format: 'jpg',
@@ -89,7 +117,7 @@ export async function uploadProfileImageBuffer({
 export async function destroyProfileImage({ kind, ownerId, url }) {
   if (!isCloudinaryConfigured()) return;
 
-  ensureConfigured();
+  const auth = ensureConfigured();
 
   const candidates = [];
   if (kind === 'workspace-profile') {
@@ -107,7 +135,11 @@ export async function destroyProfileImage({ kind, ownerId, url }) {
 
   for (const publicId of candidates) {
     try {
-      await cloudinary.uploader.destroy(publicId, { invalidate: true, resource_type: 'image' });
+      await cloudinary.uploader.destroy(publicId, {
+        ...auth,
+        invalidate: true,
+        resource_type: 'image',
+      });
     } catch (error) {
       console.warn('Cloudinary destroy failed for', publicId, error?.message || error);
     }

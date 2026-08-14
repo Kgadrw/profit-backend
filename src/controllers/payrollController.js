@@ -187,6 +187,7 @@ export const updatePayroll = async (req, res) => {
       payroll.approvalStatus = 'pending_approval';
       Object.assign(payroll, buildSubmissionFields(req, 'pending_approval'));
     }
+    // changes_requested stays editable until the submitter explicitly resubmits
 
     await payroll.save();
     res.json({ data: payroll });

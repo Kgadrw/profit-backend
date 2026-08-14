@@ -1,6 +1,12 @@
 /** Shared approval workflow helpers for workspace finance records. */
 
-export const APPROVAL_STATUSES = ['draft', 'pending_approval', 'approved', 'rejected'];
+export const APPROVAL_STATUSES = [
+  'draft',
+  'pending_approval',
+  'approved',
+  'rejected',
+  'changes_requested',
+];
 
 export function isWorkspaceApprovalEnabled(req) {
   return req.dataScope?.mode === 'workspace';
@@ -61,6 +67,23 @@ export function buildRejectionFields(req, rejectionNote) {
   };
 }
 
+export function buildChangesRequestedFields(req, changeNote) {
+  const user = req.user;
+  const note = changeNote ? String(changeNote).trim().slice(0, 500) : '';
+  if (!note) {
+    const error = new Error('A note is required when requesting changes');
+    error.statusCode = 400;
+    throw error;
+  }
+  return {
+    approvalStatus: 'changes_requested',
+    approvedByUserId: user?._id,
+    approvedByName: user?.name || 'User',
+    approvedAt: new Date(),
+    rejectionNote: note,
+  };
+}
+
 export function isRecordApproved(record) {
   const status = record?.approvalStatus;
   return !status || status === 'approved';
@@ -71,5 +94,22 @@ export function assertRecordApproved(record, actionLabel = 'perform this action'
     const error = new Error(`Record must be approved before you can ${actionLabel}`);
     error.statusCode = 400;
     throw error;
+  }
+}
+
+export function isEditableApprovalStatus(status) {
+  return status === 'rejected' || status === 'changes_requested' || status === 'draft' || !status || status === 'approved';
+}
+
+export function financePathForEntity(entityType) {
+  switch (entityType) {
+    case 'expense':
+      return '/finance/expenditure';
+    case 'bill':
+      return '/finance/bills';
+    case 'payroll':
+      return '/finance/payroll';
+    default:
+      return '/approvals';
   }
 }

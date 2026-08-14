@@ -124,15 +124,22 @@ export async function notifyLeaveRequesterOfDecision(leave, { actorUserId, decis
   try {
     if (!leave?.requesterUserId) return;
     const status = decision || leave.status;
-    if (status !== 'approved' && status !== 'rejected') return;
+    if (status !== 'approved' && status !== 'rejected' && status !== 'changes_requested') return;
 
-    const title = status === 'approved' ? 'Leave approved' : 'Leave rejected';
+    const title =
+      status === 'approved'
+        ? 'Leave approved'
+        : status === 'changes_requested'
+          ? 'Leave changes requested'
+          : 'Leave rejected';
     const range = formatLeaveRange(leave.startDate, leave.endDate);
     const reviewer = leave.reviewedByName || 'A manager';
     const body =
       status === 'approved'
         ? `${reviewer} approved your ${leave.leaveType || 'leave'} request (${range}).`
-        : `${reviewer} rejected your ${leave.leaveType || 'leave'} request (${range}).`;
+        : status === 'changes_requested'
+          ? `${reviewer} requested changes on your ${leave.leaveType || 'leave'} request (${range}).`
+          : `${reviewer} rejected your ${leave.leaveType || 'leave'} request (${range}).`;
 
     const notification = await Notification.create({
       userId: leave.requesterUserId,
@@ -144,7 +151,7 @@ export async function notifyLeaveRequesterOfDecision(leave, { actorUserId, decis
       data: {
         leaveRequestId: String(leave._id),
         workspaceId: leave.workspaceId ? String(leave.workspaceId) : null,
-        route: '/team/leave',
+        route: '/hr/leave',
         status,
       },
       read: false,
@@ -158,19 +165,22 @@ export async function notifyLeaveRequesterOfDecision(leave, { actorUserId, decis
     await sendEmail({
       to: user.email,
       subject: title,
-      text: `${body}\n\nOpen Trippo → Team → Leave for details.\n`,
+      text: `${body}\n\nOpen Trippo → HR → Leave for details.\n`,
       html: `
         <p>Hello${user.name ? ` ${user.name}` : ''},</p>
         <p>${body}</p>
         ${
-          status === 'rejected' && leave.rejectionNote
+          (status === 'rejected' || status === 'changes_requested') && leave.rejectionNote
             ? `<p><strong>Note:</strong> ${String(leave.rejectionNote).slice(0, 500)}</p>`
             : ''
         }
-        <p>Open <strong>Team → Leave</strong> in Trippo for details.</p>
+        <p>Open <strong>HR → Leave</strong> in Trippo to ${
+          status === 'changes_requested' ? 'edit and resubmit' : 'view details'
+        }.</p>
       `,
     });
   } catch (error) {
     console.error('Failed to notify leave requester:', error);
   }
 }
+

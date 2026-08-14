@@ -6,10 +6,12 @@ import { handleScopeError } from '../utils/scopeErrors.js';
 import {
   assertCanApprove,
   buildApprovalFields,
+  buildChangesRequestedFields,
   buildRejectionFields,
   buildSubmissionFields,
   isWorkspaceApprovalEnabled,
 } from '../utils/approvalWorkflow.js';
+import { notifySubmitterOfChangesRequested } from '../utils/approvalNotifications.js';
 
 const ENTITY_MODELS = {
   expense: Expense,
@@ -30,6 +32,7 @@ function formatApprovalItem(entityType, record) {
     date: plain.date || plain.dueDate || plain.paymentDate,
     approvalStatus: plain.approvalStatus || 'approved',
     submittedByName: plain.submittedByName,
+    submittedByUserId: plain.submittedByUserId ? String(plain.submittedByUserId) : undefined,
     submittedAt: plain.createdAt,
     rejectionNote: plain.rejectionNote,
     category: plain.category,
@@ -170,6 +173,38 @@ export const rejectRecord = async (req, res) => {
   }
 };
 
+export const requestChangesRecord = async (req, res) => {
+  try {
+    assertPageAccess(req, 'approvals');
+    assertCanApprove(req);
+
+    const { entityType, id } = req.params;
+    const { note, changeNote, rejectionNote } = req.body || {};
+    const record = await findScopedRecord(req, entityType, id);
+
+    if (record.approvalStatus !== 'pending_approval') {
+      return res.status(400).json({ error: 'Only pending records can receive change requests' });
+    }
+
+    Object.assign(record, buildChangesRequestedFields(req, note || changeNote || rejectionNote));
+    await record.save();
+
+    void notifySubmitterOfChangesRequested(record, {
+      entityType,
+      actorUserId: req.user?._id,
+      note: record.rejectionNote,
+    });
+
+    res.json({ data: formatApprovalItem(entityType, record) });
+  } catch (error) {
+    console.error('Error requesting changes on record:', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    handleScopeError(res, error);
+  }
+};
+
 export const resubmitRecord = async (req, res) => {
   try {
     assertPageAccess(req, 'finance');
@@ -180,8 +215,20 @@ export const resubmitRecord = async (req, res) => {
     const { entityType, id } = req.params;
     const record = await findScopedRecord(req, entityType, id);
 
-    if (!['rejected', 'draft'].includes(record.approvalStatus)) {
-      return res.status(400).json({ error: 'Only rejected or draft records can be resubmitted' });
+    if (!['rejected', 'draft', 'changes_requested'].includes(record.approvalStatus)) {
+      return res.status(400).json({
+        error: 'Only rejected, draft, or changes-requested records can be resubmitted',
+      });
+    }
+
+    const submitterId = record.submittedByUserId ? String(record.submittedByUserId) : '';
+    const actorId = req.user?._id ? String(req.user._id) : '';
+    if (submitterId && actorId && submitterId !== actorId && !req.dataScope?.role?.match(/owner|admin/)) {
+      // Allow owner/admin to resubmit on behalf; otherwise only the submitter.
+      const role = req.dataScope?.role;
+      if (role !== 'owner' && role !== 'admin') {
+        return res.status(403).json({ error: 'Only the submitter can resubmit this record' });
+      }
     }
 
     record.approvalStatus = 'pending_approval';

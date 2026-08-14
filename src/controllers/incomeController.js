@@ -24,6 +24,19 @@ const pickMoneyFields = (body, includeReceipt = true) => {
     paymentMethod: body.paymentMethod || 'cash',
   };
 
+  if (body.isRecurring !== undefined) {
+    fields.isRecurring = Boolean(body.isRecurring);
+  }
+  if (body.recurrenceFrequency !== undefined || body.isRecurring !== undefined) {
+    const recurring = body.isRecurring !== undefined ? Boolean(body.isRecurring) : Boolean(body.recurrenceFrequency);
+    const frequency = String(body.recurrenceFrequency || '').toLowerCase();
+    fields.recurrenceFrequency =
+      recurring && ['weekly', 'monthly', 'yearly'].includes(frequency) ? frequency : '';
+    if (body.isRecurring === undefined) {
+      fields.isRecurring = Boolean(fields.recurrenceFrequency);
+    }
+  }
+
   if (body.bankAccountName !== undefined) {
     fields.bankAccountName = body.bankAccountName ? body.bankAccountName.trim() : undefined;
   }

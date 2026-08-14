@@ -21,6 +21,8 @@ import {
   getGroupChatSettings,
   updateGroupChatDisappearing,
   uploadWorkspaceChatAttachment,
+  voteWorkspaceMessagePoll,
+  toggleWorkspaceMessageReaction,
 } from '../controllers/workspaceMessageController.js';
 import {
   listDirectChatThreads,
@@ -37,6 +39,8 @@ import {
   getDirectChatInfo,
   updateDirectChatDisappearing,
   updateChatNickname,
+  voteDirectChatMessagePoll,
+  toggleDirectChatMessageReaction,
 } from '../controllers/workspaceDirectChatController.js';
 import {
   profileUpload,
@@ -70,6 +74,8 @@ router.get('/:workspaceId/members', getWorkspaceMembers);
 router.get('/:workspaceId/messages', getWorkspaceMessages);
 router.post('/:workspaceId/messages', sendWorkspaceMessage);
 router.post('/:workspaceId/messages/read', markWorkspaceMessagesRead);
+router.post('/:workspaceId/messages/:messageId/poll/vote', voteWorkspaceMessagePoll);
+router.post('/:workspaceId/messages/:messageId/reactions', toggleWorkspaceMessageReaction);
 router.post(
   '/:workspaceId/messages/attachments',
   chatAttachmentUpload.single('file'),
@@ -84,6 +90,14 @@ router.get('/:workspaceId/direct-chats', listDirectChatThreads);
 router.post('/:workspaceId/direct-chats', openDirectChat);
 router.get('/:workspaceId/direct-chats/:conversationId/messages', getDirectChatMessages);
 router.post('/:workspaceId/direct-chats/:conversationId/messages', sendDirectChatMessage);
+router.post(
+  '/:workspaceId/direct-chats/:conversationId/messages/:messageId/poll/vote',
+  voteDirectChatMessagePoll,
+);
+router.post(
+  '/:workspaceId/direct-chats/:conversationId/messages/:messageId/reactions',
+  toggleDirectChatMessageReaction,
+);
 router.patch('/:workspaceId/direct-chats/:conversationId/messages/:messageId', editDirectChatMessage);
 router.delete('/:workspaceId/direct-chats/:conversationId/messages/:messageId', deleteDirectChatMessage);
 router.post('/:workspaceId/direct-chats/:conversationId/read', markDirectChatMessagesRead);

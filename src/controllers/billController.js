@@ -102,10 +102,16 @@ export const createBill = async (req, res) => {
       bankAccountNumber,
       receiptUrl,
       receiptFileName,
+      isRecurring,
+      recurrenceFrequency,
     } = req.body;
 
     const vendorFields = await resolveVendorFields(req, vendorId, vendor);
     const approvalStatus = getInitialApprovalStatus(req);
+    const recurring = Boolean(isRecurring);
+    const frequency = String(recurrenceFrequency || '').toLowerCase();
+    const normalizedFrequency =
+      recurring && ['weekly', 'monthly', 'yearly'].includes(frequency) ? frequency : '';
 
     const bill = new Bill({
       title: title?.trim(),
@@ -116,6 +122,8 @@ export const createBill = async (req, res) => {
       dueDate: normalizeBillDate(dueDate),
       status: 'pending',
       note: note ? note.trim() : undefined,
+      isRecurring: recurring,
+      recurrenceFrequency: normalizedFrequency,
       paymentMethod: paymentMethod || 'cash',
       bankAccountName: bankAccountName ? bankAccountName.trim() : undefined,
       bankAccountNumber: bankAccountNumber ? bankAccountNumber.trim() : undefined,
@@ -171,6 +179,8 @@ export const updateBill = async (req, res) => {
       bankAccountNumber,
       receiptUrl,
       receiptFileName,
+      isRecurring,
+      recurrenceFrequency,
     } = req.body;
 
     if (title !== undefined) bill.title = title?.trim();
@@ -187,6 +197,13 @@ export const updateBill = async (req, res) => {
     if (category !== undefined) bill.category = category ? category.trim() : 'bills';
     if (dueDate !== undefined) bill.dueDate = normalizeBillDate(dueDate);
     if (note !== undefined) bill.note = note ? note.trim() : undefined;
+    if (isRecurring !== undefined || recurrenceFrequency !== undefined) {
+      const recurring = isRecurring !== undefined ? Boolean(isRecurring) : Boolean(recurrenceFrequency);
+      const frequency = String(recurrenceFrequency || bill.recurrenceFrequency || '').toLowerCase();
+      bill.isRecurring = recurring;
+      bill.recurrenceFrequency =
+        recurring && ['weekly', 'monthly', 'yearly'].includes(frequency) ? frequency : '';
+    }
     if (paymentMethod !== undefined) bill.paymentMethod = paymentMethod;
     if (bankAccountName !== undefined) bill.bankAccountName = bankAccountName ? bankAccountName.trim() : undefined;
     if (bankAccountNumber !== undefined) bill.bankAccountNumber = bankAccountNumber ? bankAccountNumber.trim() : undefined;
@@ -197,6 +214,7 @@ export const updateBill = async (req, res) => {
       bill.approvalStatus = 'pending_approval';
       Object.assign(bill, buildSubmissionFields(req, 'pending_approval'));
     }
+    // changes_requested stays editable until the submitter explicitly resubmits
 
     await bill.save();
     res.json({ data: bill });

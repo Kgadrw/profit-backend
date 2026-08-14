@@ -4,6 +4,7 @@ import {
   getApprovalSummary,
   approveRecord,
   rejectRecord,
+  requestChangesRecord,
   resubmitRecord,
 } from '../controllers/approvalController.js';
 import { apiLimiter } from '../middleware/security.js';
@@ -22,6 +23,7 @@ router.get('/summary', getApprovalSummary);
 router.get('/', getApprovalQueue);
 router.post('/:entityType/:id/approve', approveRecord);
 router.post('/:entityType/:id/reject', rejectRecord);
+router.post('/:entityType/:id/request-changes', requestChangesRecord);
 router.post('/:entityType/:id/resubmit', resubmitRecord);
 
 export default router;

@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 export const approvalFieldDefinitions = {
   approvalStatus: {
     type: String,
-    enum: ['draft', 'pending_approval', 'approved', 'rejected'],
+    enum: ['draft', 'pending_approval', 'approved', 'rejected', 'changes_requested'],
     default: 'approved',
     index: true,
   },

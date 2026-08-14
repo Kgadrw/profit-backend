@@ -7,6 +7,7 @@ import CompanyAnnouncement from '../models/CompanyAnnouncement.js';
 import { buildListQuery, buildCreateScope, assertPageAccess, buildActorFields } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { canAccessWorkspacePage, canReviewLeaveRequests } from '../constants/workspacePermissions.js';
+import { getUpcomingWorkReminders } from '../utils/workReminderService.js';
 
 const ANNOUNCEMENT_SCOPES = ['workspace', 'regional', 'global'];
 const ANNOUNCEMENT_PRIORITIES = ['normal', 'high', 'critical'];
@@ -119,6 +120,7 @@ export const getCorporateCalendarSummary = async (req, res) => {
     const pendingAutomations = results[index++];
     const approvedLeaveWindows = canSeeLeave ? results[index++] : 0;
     const upcomingMilestones = canSeeProjects ? results[index++] : 0;
+    const upcomingReminders = await getUpcomingWorkReminders(scope, { days: 7, limit: 12 });
 
     res.json({
       data: {
@@ -127,10 +129,25 @@ export const getCorporateCalendarSummary = async (req, res) => {
         pendingAutomations,
         approvedLeaveWindows,
         upcomingMilestones,
+        upcomingReminders,
       },
     });
   } catch (error) {
     console.error('Error fetching corporate calendar summary:', error);
+    handleScopeError(res, error);
+  }
+};
+
+export const getCorporateCalendarReminders = async (req, res) => {
+  try {
+    assertPageAccess(req, 'calendar');
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+    const scope = buildListQuery(req);
+    const items = await getUpcomingWorkReminders(scope, { days, limit });
+    res.json({ data: items });
+  } catch (error) {
+    console.error('Error fetching corporate calendar reminders:', error);
     handleScopeError(res, error);
   }
 };

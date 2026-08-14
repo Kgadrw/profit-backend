@@ -30,6 +30,34 @@ const replyToSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const pollOptionSchema = new mongoose.Schema(
+  {
+    text: { type: String, required: true, trim: true, maxlength: 280 },
+    voterIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  },
+  { _id: false },
+);
+
+const pollSchema = new mongoose.Schema(
+  {
+    question: { type: String, required: true, trim: true, maxlength: 500 },
+    options: {
+      type: [pollOptionSchema],
+      required: true,
+      validate: [(options) => options.length >= 2 && options.length <= 10, 'A poll needs 2-10 options'],
+    },
+  },
+  { _id: false },
+);
+
+const reactionSchema = new mongoose.Schema(
+  {
+    emoji: { type: String, required: true, trim: true, maxlength: 32 },
+    userIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  },
+  { _id: false },
+);
+
 const workspaceDirectMessageSchema = new mongoose.Schema(
   {
     conversationId: {
@@ -82,6 +110,14 @@ const workspaceDirectMessageSchema = new mongoose.Schema(
         waveform: { type: [Number], default: undefined },
       },
     ],
+    poll: {
+      type: pollSchema,
+      default: undefined,
+    },
+    reactions: {
+      type: [reactionSchema],
+      default: [],
+    },
     readBy: [
       {
         userId: {

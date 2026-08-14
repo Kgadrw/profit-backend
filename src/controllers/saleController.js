@@ -179,12 +179,26 @@ export const createSale = async (req, res) => {
       ...buildActorFields(req),
     };
 
-    // Convert string numbers to numbers
-    if (saleData.quantity) saleData.quantity = parseInt(saleData.quantity);
-    if (saleData.revenue) saleData.revenue = parseFloat(saleData.revenue);
-    if (saleData.cost) saleData.cost = parseFloat(saleData.cost);
-    if (saleData.profit) saleData.profit = parseFloat(saleData.profit);
-    if (saleData.customAmount) saleData.customAmount = parseFloat(saleData.customAmount);
+    // Idempotency: offline sync / mobile retries can repeat the same POST.
+    // Return the already-created sale before touching stock or balances.
+    if (saleData.clientRequestId) {
+      const existingSale = await Sale.findOne(
+        buildListQuery(req, { clientRequestId: saleData.clientRequestId }),
+      );
+      if (existingSale) {
+        return res.status(200).json({
+          message: 'Sale already recorded',
+          data: existingSale,
+        });
+      }
+    }
+
+    // Convert string numbers to numbers (allow 0 — do not use truthy checks)
+    if (saleData.quantity != null && saleData.quantity !== '') saleData.quantity = parseInt(saleData.quantity);
+    if (saleData.revenue != null && saleData.revenue !== '') saleData.revenue = parseFloat(saleData.revenue);
+    if (saleData.cost != null && saleData.cost !== '') saleData.cost = parseFloat(saleData.cost);
+    if (saleData.profit != null && saleData.profit !== '') saleData.profit = parseFloat(saleData.profit);
+    if (saleData.customAmount != null && saleData.customAmount !== '') saleData.customAmount = parseFloat(saleData.customAmount);
     if (saleData.date) saleData.date = new Date(saleData.date);
 
     try {
@@ -246,12 +260,15 @@ export const createSale = async (req, res) => {
       }
 
       // For services, cost is typically 0 unless specified
-      if (!saleData.cost) {
+      if (saleData.cost == null || !Number.isFinite(Number(saleData.cost))) {
         saleData.cost = 0;
       }
 
-      // Calculate profit
-      saleData.profit = saleData.revenue - saleData.cost;
+      // Calculate profit (0 when cost equals revenue/selling total)
+      const serviceRevenue = Number(saleData.revenue) || 0;
+      const serviceCost = Number(saleData.cost) || 0;
+      const serviceProfit = serviceRevenue - serviceCost;
+      saleData.profit = Math.abs(serviceProfit) < 0.005 ? 0 : Math.round(serviceProfit * 100) / 100;
 
       // Set product-like display name from service details for compatibility
       if (!saleData.serviceName && saleData.serviceId) {
@@ -275,8 +292,11 @@ export const createSale = async (req, res) => {
       }
     }
 
-    if (saleData.profit == null || !Number.isFinite(Number(saleData.profit))) {
-      saleData.profit = (Number(saleData.revenue) || 0) - (Number(saleData.cost) || 0);
+    {
+      const revenue = Number(saleData.revenue) || 0;
+      const cost = Number(saleData.cost) || 0;
+      const profit = revenue - cost;
+      saleData.profit = Math.abs(profit) < 0.005 ? 0 : Math.round(profit * 100) / 100;
     }
 
     const sale = new Sale(saleData);
@@ -290,6 +310,31 @@ export const createSale = async (req, res) => {
     });
   } catch (error) {
     console.error('Create sale error:', error);
+    // A simultaneous duplicate request can race the lookup above. The unique
+    // index is the final guard; undo this request's stock deduction, then
+    // return the original instead of failing/retrying.
+    if (error?.code === 11000 && req.body?.clientRequestId) {
+      const isProductSale =
+        req.body?.saleType !== 'service' && req.body?.isService !== true;
+      if (isProductSale) {
+        try {
+          const product = await resolveInventoryProduct(req, req.body.productId, req.body.product);
+          const restored = await restoreProductStock(product, Number(req.body.quantity) || 0);
+          if (restored) await broadcastScopeChange(req, 'product:updated', restored);
+        } catch (restoreError) {
+          console.error('Failed to restore duplicate sale stock:', restoreError);
+        }
+      }
+      const existingSale = await Sale.findOne(
+        buildListQuery(req, { clientRequestId: req.body.clientRequestId }),
+      );
+      if (existingSale) {
+        return res.status(200).json({
+          message: 'Sale already recorded',
+          data: existingSale,
+        });
+      }
+    }
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
@@ -313,12 +358,19 @@ export const createBulkSales = async (req, res) => {
         ...buildActorFields(req),
       };
 
-      // Convert string numbers to numbers
-      if (processedSale.quantity) processedSale.quantity = parseInt(processedSale.quantity);
-      if (processedSale.revenue) processedSale.revenue = parseFloat(processedSale.revenue);
-      if (processedSale.cost) processedSale.cost = parseFloat(processedSale.cost);
-      if (processedSale.profit) processedSale.profit = parseFloat(processedSale.profit);
+      // Convert string numbers to numbers (allow 0)
+      if (processedSale.quantity != null && processedSale.quantity !== '') processedSale.quantity = parseInt(processedSale.quantity);
+      if (processedSale.revenue != null && processedSale.revenue !== '') processedSale.revenue = parseFloat(processedSale.revenue);
+      if (processedSale.cost != null && processedSale.cost !== '') processedSale.cost = parseFloat(processedSale.cost);
+      if (processedSale.profit != null && processedSale.profit !== '') processedSale.profit = parseFloat(processedSale.profit);
       if (processedSale.date) processedSale.date = new Date(processedSale.date);
+
+      {
+        const revenue = Number(processedSale.revenue) || 0;
+        const cost = Number(processedSale.cost) || 0;
+        const profit = revenue - cost;
+        processedSale.profit = Math.abs(profit) < 0.005 ? 0 : Math.round(profit * 100) / 100;
+      }
 
       // Update product stock for inventory products
       try {
@@ -365,11 +417,11 @@ export const updateSale = async (req, res) => {
     delete updateData.createdByUserId;
     delete updateData.createdByName;
     
-    // Convert string numbers to numbers
-    if (updateData.quantity) updateData.quantity = parseInt(updateData.quantity);
-    if (updateData.revenue) updateData.revenue = parseFloat(updateData.revenue);
-    if (updateData.cost) updateData.cost = parseFloat(updateData.cost);
-    if (updateData.profit) updateData.profit = parseFloat(updateData.profit);
+    // Convert string numbers to numbers (allow 0)
+    if (updateData.quantity != null && updateData.quantity !== '') updateData.quantity = parseInt(updateData.quantity);
+    if (updateData.revenue != null && updateData.revenue !== '') updateData.revenue = parseFloat(updateData.revenue);
+    if (updateData.cost != null && updateData.cost !== '') updateData.cost = parseFloat(updateData.cost);
+    if (updateData.profit != null && updateData.profit !== '') updateData.profit = parseFloat(updateData.profit);
     if (updateData.date) updateData.date = new Date(updateData.date);
 
     if (updateData.clientId !== undefined || updateData.buyerName !== undefined) {
@@ -410,6 +462,15 @@ export const updateSale = async (req, res) => {
         if (updated) await broadcastScopeChange(req, 'product:updated', updated);
         updateData.productId = newProduct._id;
       }
+    }
+
+    if (updateData.revenue != null || updateData.cost != null) {
+      const revenue =
+        updateData.revenue != null ? Number(updateData.revenue) : Number(oldSale.revenue) || 0;
+      const cost =
+        updateData.cost != null ? Number(updateData.cost) : Number(oldSale.cost) || 0;
+      const profit = revenue - cost;
+      updateData.profit = Math.abs(profit) < 0.005 ? 0 : Math.round(profit * 100) / 100;
     }
 
     const sale = await Sale.findOneAndUpdate(

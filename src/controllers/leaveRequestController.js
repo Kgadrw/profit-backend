@@ -96,7 +96,7 @@ export const getLeaveRequests = async (req, res) => {
     const { status } = req.query;
     const query = buildLeaveListQuery(req);
 
-    if (['pending', 'approved', 'rejected', 'cancelled'].includes(status)) {
+    if (['pending', 'approved', 'rejected', 'cancelled', 'changes_requested'].includes(status)) {
       query.status = status;
     }
 
@@ -270,13 +270,154 @@ export const rejectLeaveRequest = async (req, res) => {
   }
 };
 
+export const requestLeaveChanges = async (req, res) => {
+  try {
+    assertPageAccess(req, 'team');
+    if (!canReviewLeave(req)) {
+      return res.status(403).json({ error: 'Only workspace admins and HR can request leave changes' });
+    }
+
+    const leave = await findLeaveRequest(req, req.params.id);
+    if (leave.status !== 'pending') {
+      return res.status(400).json({ error: 'Only pending leave requests can receive change requests' });
+    }
+
+    const { note, changeNote, rejectionNote } = req.body || {};
+    const message = String(note || changeNote || rejectionNote || '').trim().slice(0, 500);
+    if (!message) {
+      return res.status(400).json({ error: 'A note is required when requesting changes' });
+    }
+
+    leave.status = 'changes_requested';
+    leave.reviewedByUserId = req.user._id;
+    leave.reviewedByName = req.user.name || 'User';
+    leave.reviewedAt = new Date();
+    leave.rejectionNote = message;
+    await leave.save();
+
+    void notifyLeaveRequesterOfDecision(leave, {
+      actorUserId: req.user._id,
+      decision: 'changes_requested',
+    });
+
+    res.json({ data: formatLeaveRequest(leave) });
+  } catch (error) {
+    console.error('Error requesting leave changes:', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    handleScopeError(res, error);
+  }
+};
+
+export const updateLeaveRequest = async (req, res) => {
+  try {
+    assertPageAccess(req, 'team');
+    const leave = await findLeaveRequest(req, req.params.id);
+    const userId = String(req.user._id);
+    const isOwner = String(leave.requesterUserId) === userId;
+
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only the requester can edit this leave request' });
+    }
+
+    if (!['changes_requested', 'rejected', 'pending'].includes(leave.status)) {
+      return res.status(400).json({ error: 'This leave request cannot be edited' });
+    }
+
+    // Pending can only be cancelled, not edited; allow edit for changes_requested/rejected.
+    if (leave.status === 'pending') {
+      return res.status(400).json({
+        error: 'Pending leave cannot be edited. Cancel and create a new request, or wait for a change request.',
+      });
+    }
+
+    const { leaveType, startDate, endDate, reason, isPublic, teamMemberId } = req.body || {};
+
+    if (startDate !== undefined || endDate !== undefined) {
+      const parsedStart = normalizeLeaveDate(startDate !== undefined ? startDate : leave.startDate);
+      const parsedEnd = normalizeLeaveDate(endDate !== undefined ? endDate : leave.endDate);
+      if (!parsedStart || !parsedEnd) {
+        return res.status(400).json({ error: 'Start and end dates are required' });
+      }
+      if (parsedEnd < parsedStart) {
+        return res.status(400).json({ error: 'End date must be on or after start date' });
+      }
+      leave.startDate = parsedStart;
+      leave.endDate = parsedEnd;
+    }
+
+    if (leaveType !== undefined) leave.leaveType = leaveType || 'annual';
+    if (reason !== undefined) leave.reason = reason ? String(reason).trim() : undefined;
+    if (isPublic !== undefined) leave.isPublic = Boolean(isPublic);
+
+    if (teamMemberId !== undefined) {
+      if (teamMemberId) {
+        const member = await TeamMember.findOne(buildListQuery(req, { _id: teamMemberId }));
+        leave.teamMemberId = member ? member._id : undefined;
+      } else {
+        leave.teamMemberId = undefined;
+      }
+    }
+
+    // Keep changes_requested / rejected until explicit resubmit.
+    await leave.save();
+    res.json({ data: formatLeaveRequest(leave) });
+  } catch (error) {
+    console.error('Error updating leave request:', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    handleScopeError(res, error);
+  }
+};
+
+export const resubmitLeaveRequest = async (req, res) => {
+  try {
+    assertPageAccess(req, 'team');
+    const leave = await findLeaveRequest(req, req.params.id);
+    const userId = String(req.user._id);
+    const isOwner = String(leave.requesterUserId) === userId;
+
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only the requester can resubmit this leave request' });
+    }
+
+    if (!['changes_requested', 'rejected'].includes(leave.status)) {
+      return res.status(400).json({ error: 'Only leave requests with requested changes or rejections can be resubmitted' });
+    }
+
+    leave.status = 'pending';
+    leave.reviewedByUserId = undefined;
+    leave.reviewedByName = undefined;
+    leave.reviewedAt = undefined;
+    leave.rejectionNote = undefined;
+    await leave.save();
+
+    if (leave.workspaceId) {
+      void notifyLeaveReviewersOfNewRequest(leave, {
+        workspaceId: leave.workspaceId,
+        actorUserId: userId,
+      });
+    }
+
+    res.json({ data: formatLeaveRequest(leave) });
+  } catch (error) {
+    console.error('Error resubmitting leave request:', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    handleScopeError(res, error);
+  }
+};
+
 export const cancelLeaveRequest = async (req, res) => {
   try {
     assertPageAccess(req, 'team');
     const leave = await findLeaveRequest(req, req.params.id);
 
-    if (leave.status !== 'pending') {
-      return res.status(400).json({ error: 'Only pending leave requests can be cancelled' });
+    if (!['pending', 'changes_requested'].includes(leave.status)) {
+      return res.status(400).json({ error: 'Only pending or changes-requested leave can be cancelled' });
     }
 
     const userId = String(req.user._id);

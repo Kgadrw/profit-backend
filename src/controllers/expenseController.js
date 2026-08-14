@@ -189,6 +189,7 @@ export const updateExpense = async (req, res) => {
       expense.approvalStatus = 'pending_approval';
       Object.assign(expense, buildSubmissionFields(req, 'pending_approval'));
     }
+    // changes_requested stays editable until the submitter explicitly resubmits
 
     await expense.save();
     res.json({ data: expense });

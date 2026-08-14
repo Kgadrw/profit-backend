@@ -13,6 +13,15 @@ import { OAuth2Client } from 'google-auth-library';
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleOAuthClient = googleClientId ? new OAuth2Client(googleClientId) : null;
 
+function normalizeGoogleProfilePicture(url) {
+  const value = String(url || '').trim();
+  if (!/^https:\/\/(?:lh[3-6]|[a-z0-9-]+)\.googleusercontent\.com\//i.test(value)) {
+    return value;
+  }
+  // Google identity tokens usually contain a tiny `=s96-c` thumbnail.
+  return value.replace(/=s\d+(?:-[a-z0-9-]+)?(?=([?#]|$))/i, '=s512-c');
+}
+
 async function verifyGoogleCredential(credential) {
   if (!googleOAuthClient || !googleClientId) {
     throw new Error('Google sign-in is not configured');
@@ -32,7 +41,7 @@ async function verifyGoogleCredential(credential) {
     email: payload.email.toLowerCase().trim(),
     name: (payload.name || payload.email.split('@')[0] || 'User').trim(),
     emailVerified: payload.email_verified === true,
-    picture: typeof payload.picture === 'string' ? payload.picture.trim() : '',
+    picture: normalizeGoogleProfilePicture(payload.picture),
   };
 }
 
@@ -50,7 +59,10 @@ async function linkGoogleProfile(user, profile) {
   if (!user.googleId) {
     user.googleId = profile.googleId;
   }
-  if (profile.picture && !user.profilePictureUrl) {
+  if (
+    profile.picture &&
+    (!user.profilePictureUrl || /googleusercontent\.com\//i.test(user.profilePictureUrl))
+  ) {
     user.profilePictureUrl = profile.picture;
   }
   user.authProvider = resolveAuthProvider(user);

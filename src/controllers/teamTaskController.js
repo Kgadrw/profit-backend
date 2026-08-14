@@ -8,6 +8,22 @@ import { handleScopeError } from '../utils/scopeErrors.js';
 import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
 import { assertCurrentUserIsAssignee } from '../utils/taskAssigneeAccess.js';
 
+const DEFAULT_REMINDER_OFFSETS = [1440, 60];
+
+function normalizeReminders(value, fallbackToDefaults = false) {
+  if (value === undefined) {
+    return fallbackToDefaults
+      ? DEFAULT_REMINDER_OFFSETS.map((offsetMinutes) => ({ offsetMinutes }))
+      : undefined;
+  }
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((item) => Number(typeof item === 'object' ? item.offsetMinutes : item))
+    .filter((offset) => Number.isFinite(offset) && offset >= 0))]
+    .sort((a, b) => b - a)
+    .map((offsetMinutes) => ({ offsetMinutes }));
+}
+
 const populateTask = (query) =>
   query
     .populate('assigneeId', 'name email jobTitle department status')
@@ -180,6 +196,7 @@ export const createTeamTask = async (req, res) => {
       status,
       priority,
       dueDate,
+      reminders,
       monthKey,
       projectId,
       milestoneId,
@@ -216,6 +233,7 @@ export const createTeamTask = async (req, res) => {
       status: status || 'todo',
       priority: priority || 'medium',
       dueDate: dueDate ? new Date(dueDate) : undefined,
+      reminders: normalizeReminders(reminders, Boolean(dueDate)),
       monthKey: monthKey || undefined,
       projectId: linkedProjectId,
       milestoneId: linkedMilestoneId,
@@ -253,6 +271,7 @@ export const updateTeamTask = async (req, res) => {
       'status',
       'priority',
       'dueDate',
+      'reminders',
       'monthKey',
       'completionNote',
       'sortOrder',
@@ -264,6 +283,15 @@ export const updateTeamTask = async (req, res) => {
       if (req.body[field] === undefined) continue;
       if (field === 'dueDate') {
         task.dueDate = req.body.dueDate ? new Date(req.body.dueDate) : null;
+        if (
+          req.body.reminders === undefined &&
+          req.body.dueDate &&
+          (!Array.isArray(task.reminders) || task.reminders.length === 0)
+        ) {
+          task.reminders = normalizeReminders(undefined, true);
+        }
+      } else if (field === 'reminders') {
+        task.reminders = normalizeReminders(req.body.reminders) || [];
       } else if (field === 'assigneeId') {
         const member = await TeamMember.findOne(buildListQuery(req, { _id: req.body.assigneeId }));
         if (!member) return res.status(400).json({ error: 'Invalid team member' });

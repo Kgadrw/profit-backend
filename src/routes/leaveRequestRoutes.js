@@ -5,6 +5,9 @@ import {
   createLeaveRequest,
   approveLeaveRequest,
   rejectLeaveRequest,
+  requestLeaveChanges,
+  updateLeaveRequest,
+  resubmitLeaveRequest,
   cancelLeaveRequest,
   deleteLeaveRequest,
 } from '../controllers/leaveRequestController.js';
@@ -24,8 +27,11 @@ router.use(apiLimiter);
 router.get('/summary', getLeaveSummary);
 router.get('/', getLeaveRequests);
 router.post('/', createLeaveRequest);
+router.put('/:id', validateObjectId, updateLeaveRequest);
 router.post('/:id/approve', validateObjectId, approveLeaveRequest);
 router.post('/:id/reject', validateObjectId, rejectLeaveRequest);
+router.post('/:id/request-changes', validateObjectId, requestLeaveChanges);
+router.post('/:id/resubmit', validateObjectId, resubmitLeaveRequest);
 router.post('/:id/cancel', validateObjectId, cancelLeaveRequest);
 router.delete('/:id', validateObjectId, deleteLeaveRequest);
 

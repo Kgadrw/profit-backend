@@ -258,6 +258,11 @@ export const validateSale = [
     .optional()
     .isIn(['product', 'service']).withMessage('saleType must be product or service'),
 
+  body('clientRequestId')
+    .optional()
+    .trim()
+    .isLength({ min: 8, max: 128 }).withMessage('Invalid sale request ID'),
+
   body('product')
     .optional()
     .trim()

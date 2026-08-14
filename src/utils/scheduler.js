@@ -19,6 +19,7 @@ import { reconcileStuckSubscriptionPayments } from '../controllers/subscriptionC
 import { checkUnreadMessageEmailReminders } from './chatNotifications.js';
 import { purgeExpiredDirectMessages } from '../controllers/workspaceDirectChatController.js';
 import { purgeExpiredGroupMessages } from '../controllers/workspaceMessageController.js';
+import { dispatchWorkReminders } from './workReminderService.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -129,10 +130,14 @@ export const startScheduler = () => {
   // Format: second minute hour day month weekday
   cron.schedule('* * * * *', async () => {
     await checkAndSendNotifications();
+    await dispatchWorkReminders();
   });
 
   // Also run on startup for immediate checks
   checkAndSendNotifications();
+  dispatchWorkReminders().catch((error) => {
+    console.error('Startup work reminder dispatch failed:', error);
+  });
   
   console.log('✅ Schedule notification scheduler started - checking every minute');
 
