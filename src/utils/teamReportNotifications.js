@@ -39,8 +39,8 @@ export async function notifyReportReviewersOfSubmission(report, { workspaceId, a
       .lean();
 
     const submitterName = report.submitterName || 'A teammate';
-    const title = 'New team report';
-    const body = `${submitterName} submitted “${report.title || 'a report'}”.`;
+    const title = 'Report review required';
+    const body = `${submitterName} submitted “${report.title || 'a report'}” for your review.`;
     const reportId = String(report._id);
 
     await Promise.all(
@@ -55,8 +55,8 @@ export async function notifyReportReviewersOfSubmission(report, { workspaceId, a
           data: {
             reportId,
             workspaceId: String(workspaceId),
-            route: '/reports',
-            kind: 'team_report',
+            route: '/approvals',
+            kind: 'team_report_approval',
           },
         });
         emitToUser(String(reviewer._id), 'notification', notification);

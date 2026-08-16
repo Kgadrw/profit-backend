@@ -1,6 +1,7 @@
 import Expense from '../models/Expense.js';
 import Bill from '../models/Bill.js';
 import Payroll from '../models/Payroll.js';
+import TeamReport from '../models/TeamReport.js';
 import { buildListQuery, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import {
@@ -52,6 +53,31 @@ function formatApprovalItem(entityType, record) {
   return base;
 }
 
+function formatTeamReportApprovalItem(record) {
+  const plain = record.toObject ? record.toObject() : record;
+  const approvalStatus =
+    plain.status === 'submitted'
+      ? 'pending_approval'
+      : plain.status === 'reviewed'
+        ? 'approved'
+        : plain.status;
+  return {
+    entityType: 'team_report',
+    id: String(plain._id),
+    title: plain.title || 'Team report',
+    amount: null,
+    date: plain.periodEnd || plain.periodStart,
+    approvalStatus,
+    submittedByName: plain.submitterName,
+    submittedByUserId: plain.submitterUserId ? String(plain.submitterUserId) : undefined,
+    submittedAt: plain.createdAt,
+    rejectionNote: plain.reviewNote,
+    reportType: plain.reportType,
+    reportTo: (plain.reportTo || []).map((recipient) => recipient.name).filter(Boolean),
+    canApprove: true,
+  };
+}
+
 async function findScopedRecord(req, entityType, id) {
   const Model = ENTITY_MODELS[entityType];
   if (!Model) {
@@ -78,16 +104,36 @@ export const getApprovalQueue = async (req, res) => {
       query.approvalStatus = status;
     }
 
-    const [expenses, bills, payrolls] = await Promise.all([
-      Expense.find(query).sort({ createdAt: -1 }).limit(200),
-      Bill.find(query).sort({ createdAt: -1 }).limit(200),
-      Payroll.find(query).sort({ createdAt: -1 }).limit(200),
+    const isAdminApprover = Boolean(req.dataScope?.role === 'owner' || req.dataScope?.role === 'admin');
+    // Members who were assigned a report review may open Approvals, but must
+    // never see finance approvals that are reserved for workspace admins.
+    const financeQuery = isAdminApprover ? query : { ...query, _id: { $in: [] } };
+    const reportStatus =
+      status === 'pending_approval'
+        ? 'submitted'
+        : status === 'approved'
+          ? 'reviewed'
+          : status;
+    const reportQuery = buildListQuery(req, {});
+    if (!isAdminApprover) {
+      reportQuery['reportTo.userId'] = req.user._id;
+    }
+    if (status && status !== 'all') {
+      reportQuery.status = reportStatus;
+    }
+
+    const [expenses, bills, payrolls, teamReports] = await Promise.all([
+      Expense.find(financeQuery).sort({ createdAt: -1 }).limit(200),
+      Bill.find(financeQuery).sort({ createdAt: -1 }).limit(200),
+      Payroll.find(financeQuery).sort({ createdAt: -1 }).limit(200),
+      TeamReport.find(reportQuery).sort({ createdAt: -1 }).limit(200),
     ]);
 
     const items = [
       ...expenses.map((r) => formatApprovalItem('expense', r)),
       ...bills.map((r) => formatApprovalItem('bill', r)),
       ...payrolls.map((r) => formatApprovalItem('payroll', r)),
+      ...teamReports.map(formatTeamReportApprovalItem),
     ].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
 
     res.json({ data: items });

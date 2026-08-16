@@ -1,5 +1,6 @@
 import TeamReport from '../models/TeamReport.js';
 import TeamMember from '../models/TeamMember.js';
+import WorkspaceMember from '../models/WorkspaceMember.js';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { isWorkspaceApprovalEnabled } from '../utils/approvalWorkflow.js';
@@ -106,11 +107,35 @@ async function resolveReportRecipients(req, value) {
     error.statusCode = 400;
     throw error;
   }
+  if (members.some((member) => !member.linkedUserId)) {
+    const error = new Error('Each report recipient must have an active Trippo account');
+    error.statusCode = 400;
+    throw error;
+  }
   return members.map((member) => ({
     memberId: member._id,
     userId: member.linkedUserId || null,
     name: member.name,
   }));
+}
+
+async function ensureRecipientsCanAccessApprovals(workspaceId, recipients) {
+  if (!workspaceId || !recipients?.length) return;
+  const userIds = recipients.map((recipient) => recipient.userId).filter(Boolean);
+  if (!userIds.length) return;
+
+  const memberships = await WorkspaceMember.find({
+    workspaceId,
+    userId: { $in: userIds },
+    role: 'member',
+  });
+  await Promise.all(
+    memberships.map(async (membership) => {
+      if (membership.permissions?.includes('approvals')) return;
+      membership.permissions = [...new Set([...(membership.permissions || []), 'approvals'])];
+      await membership.save();
+    }),
+  );
 }
 
 export const getTeamReports = async (req, res) => {
@@ -244,6 +269,7 @@ export const createTeamReport = async (req, res) => {
     });
 
     await report.save();
+    await ensureRecipientsCanAccessApprovals(report.workspaceId, recipients);
 
     if (status === 'submitted' && report.workspaceId) {
       void notifyReportReviewersOfSubmission(report, {
@@ -322,9 +348,14 @@ export const updateTeamReport = async (req, res) => {
     if (nextSteps !== undefined) report.nextSteps = sanitizeText(nextSteps, 3000) || '';
     if (attachmentUrl !== undefined) report.attachmentUrl = sanitizeText(attachmentUrl, 1000);
     if (attachmentName !== undefined) report.attachmentName = sanitizeText(attachmentName, 255);
-    if (reportTo !== undefined) report.reportTo = await resolveReportRecipients(req, reportTo);
+    let recipients;
+    if (reportTo !== undefined) {
+      recipients = await resolveReportRecipients(req, reportTo);
+      report.reportTo = recipients;
+    }
 
     await report.save();
+    if (recipients) await ensureRecipientsCanAccessApprovals(report.workspaceId, recipients);
     res.json({ data: formatTeamReport(report) });
   } catch (error) {
     console.error('Error updating team report:', error);
