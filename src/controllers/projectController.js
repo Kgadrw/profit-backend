@@ -9,6 +9,12 @@ import mongoose from 'mongoose';
 import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dataScope.js';
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { assertCurrentUserIsAssignee } from '../utils/taskAssigneeAccess.js';
+import {
+  applyTaskProgressTouch,
+  applyTaskStatusActivity,
+  deriveTaskActivityEvents,
+  initialTaskActivityFields,
+} from '../utils/taskActivity.js';
 
 const PROJECT_STATUSES = ['planning', 'active', 'on_hold', 'completed', 'cancelled'];
 const TASK_STATUSES = ['todo', 'in_progress', 'done'];
@@ -68,7 +74,7 @@ function dayKey(date) {
 }
 
 /** GitHub-style daily contribution buckets for the last `days` calendar days. */
-function buildDailyContributionSeries(taskRows, timeRows, days = 371) {
+function buildDailyContributionSeries(activityRows, timeRows, days = 371) {
   const today = new Date();
   today.setHours(12, 0, 0, 0);
 
@@ -77,7 +83,7 @@ function buildDailyContributionSeries(taskRows, timeRows, days = 371) {
     const d = new Date(today);
     d.setDate(today.getDate() - i);
     const key = dayKey(d);
-    map.set(key, { date: key, hours: 0, tasks: 0, count: 0 });
+    map.set(key, { date: key, hours: 0, tasks: 0, count: 0, intensity: 0 });
   }
 
   for (const row of timeRows || []) {
@@ -86,23 +92,29 @@ function buildDailyContributionSeries(taskRows, timeRows, days = 371) {
     const bucket = map.get(key);
     const hours = Number(row.hours || 0);
     bucket.hours += hours;
-    if (hours > 0) bucket.count += 1;
+    if (hours > 0) {
+      bucket.count += 1;
+      bucket.intensity += hours * 2;
+    }
   }
 
-  for (const row of taskRows || []) {
-    const key = dayKey(row.completedAt);
+  for (const row of activityRows || []) {
+    const key = dayKey(row.at);
     if (!key || !map.has(key)) continue;
     const bucket = map.get(key);
-    bucket.tasks += 1;
+    const weight = Number(row.weight || 1);
     bucket.count += 1;
+    bucket.intensity += weight;
+    if (row.kind === 'completed') bucket.tasks += 1;
   }
 
   return [...map.values()].map((bucket) => {
     const hours = Math.round(bucket.hours * 100) / 100;
-    const intensity = hours * 2 + bucket.tasks;
+    const intensity = bucket.intensity;
     let level = 0;
-    if (intensity > 0 && intensity < 1) level = 1;
-    else if (intensity >= 1 && intensity < 3) level = 2;
+    // Any real activity lights a square; denser days go greener.
+    if (intensity > 0 && intensity < 1.5) level = 1;
+    else if (intensity >= 1.5 && intensity < 3) level = 2;
     else if (intensity >= 3 && intensity < 6) level = 3;
     else if (intensity >= 6) level = 4;
     return {
@@ -131,11 +143,59 @@ export const getProjects = async (req, res) => {
     const query = buildListQuery(req);
     if (PROJECT_STATUSES.includes(status)) query.status = status;
 
-    const projects = await Project.find(query)
-      .populate('leadMemberId', 'name email jobTitle department')
-      .sort({ status: 1, updatedAt: -1 });
+    const scope = buildListQuery(req);
+    const [projects, projectTaskCounts, teamTaskCounts] = await Promise.all([
+      Project.find(query)
+        .populate('leadMemberId', 'name email jobTitle department')
+        .sort({ status: 1, updatedAt: -1 })
+        .lean(),
+      ProjectTask.aggregate([
+        { $match: scope },
+        {
+          $group: {
+            _id: { projectId: '$projectId', status: '$status' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      TeamTask.aggregate([
+        { $match: { ...scope, projectId: { $ne: null } } },
+        {
+          $group: {
+            _id: { projectId: '$projectId', status: '$status' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
 
-    res.json({ data: projects });
+    const taskStatusByProject = new Map();
+    const bump = (projectId, taskStatus, count) => {
+      if (!projectId || !TASK_STATUSES.includes(taskStatus)) return;
+      const key = String(projectId);
+      if (!taskStatusByProject.has(key)) {
+        taskStatusByProject.set(key, { todo: 0, in_progress: 0, done: 0 });
+      }
+      taskStatusByProject.get(key)[taskStatus] += count;
+    };
+
+    for (const row of projectTaskCounts) {
+      bump(row._id?.projectId, row._id?.status, row.count || 0);
+    }
+    for (const row of teamTaskCounts) {
+      bump(row._id?.projectId, row._id?.status, row.count || 0);
+    }
+
+    const data = projects.map((project) => ({
+      ...project,
+      taskStatus: taskStatusByProject.get(String(project._id)) || {
+        todo: 0,
+        in_progress: 0,
+        done: 0,
+      },
+    }));
+
+    res.json({ data });
   } catch (error) {
     console.error('Error fetching projects:', error);
     handleScopeError(res, error);
@@ -158,7 +218,7 @@ export const getProjectsSummary = async (req, res) => {
       projects,
       overdueMilestones,
       openProjectTasks,
-      completedProjectTasks,
+      projectTasksForGraph,
       timeEntries,
       openProjectTaskByProject,
       linkedTeamTasks,
@@ -175,8 +235,8 @@ export const getProjectsSummary = async (req, res) => {
         dueDate: { $lt: today },
       }),
       ProjectTask.countDocuments({ ...scope, status: { $ne: 'done' } }),
-      ProjectTask.find({ ...scope, status: 'done', completedAt: { $ne: null } })
-        .select('completedAt projectId')
+      ProjectTask.find(scope)
+        .select('projectId status createdAt updatedAt completedAt startedAt activityEvents')
         .lean(),
       TimeEntry.find(scope).select('date hours projectId').lean(),
       ProjectTask.aggregate([
@@ -187,7 +247,9 @@ export const getProjectsSummary = async (req, res) => {
         ...scope,
         projectId: { $ne: null },
       })
-        .select('title status priority dueDate completedAt projectId')
+        .select(
+          'title status priority dueDate completedAt projectId createdAt updatedAt startedAt activityEvents',
+        )
         .lean(),
       ProjectMilestone.find({
         ...scope,
@@ -361,15 +423,24 @@ export const getProjectsSummary = async (req, res) => {
       if (exists) graphProjectId = String(contributionProjectId);
     }
 
+    const completedProjectTasks = projectTasksForGraph
+      .filter((task) => task.status === 'done' && task.completedAt)
+      .map((task) => ({ completedAt: task.completedAt, projectId: task.projectId }));
+
     const completedTeamTasks = linkedTeamTasks
       .filter((task) => task.status === 'done' && task.completedAt)
       .map((task) => ({ completedAt: task.completedAt, projectId: task.projectId }));
 
     const allCompletedTasks = [...completedProjectTasks, ...completedTeamTasks];
 
-    const taskRowsForGraph = graphProjectId
-      ? allCompletedTasks.filter((row) => String(row.projectId) === graphProjectId)
-      : allCompletedTasks;
+    const activityRows = [
+      ...projectTasksForGraph.flatMap((task) => deriveTaskActivityEvents(task)),
+      ...linkedTeamTasks.flatMap((task) => deriveTaskActivityEvents(task)),
+    ];
+
+    const activityRowsForGraph = graphProjectId
+      ? activityRows.filter((row) => String(row.projectId) === graphProjectId)
+      : activityRows;
     const timeRowsForGraph = graphProjectId
       ? timeEntries.filter((row) => String(row.projectId) === graphProjectId)
       : timeEntries;
@@ -396,7 +467,7 @@ export const getProjectsSummary = async (req, res) => {
         contributionGraph: {
           projectId: graphProjectId,
           projectName: graphProject?.name || null,
-          days: buildDailyContributionSeries(taskRowsForGraph, timeRowsForGraph),
+          days: buildDailyContributionSeries(activityRowsForGraph, timeRowsForGraph),
         },
       },
     });
@@ -760,6 +831,7 @@ export const createProjectTask = async (req, res) => {
     }
 
     const scope = buildCreateScope(req);
+    const initialStatus = TASK_STATUSES.includes(status) ? status : 'todo';
     const task = await ProjectTask.create({
       ...scope,
       projectId: project._id,
@@ -767,12 +839,12 @@ export const createProjectTask = async (req, res) => {
       title: title.trim(),
       description: description?.trim() || '',
       assigneeId: assigneeId || null,
-      status: TASK_STATUSES.includes(status) ? status : 'todo',
+      status: initialStatus,
       priority: priority || 'medium',
       dueDate: normalizeDate(dueDate),
       estimatedHours: estimatedHours != null ? Number(estimatedHours) : undefined,
       sortOrder: sortOrder ?? 0,
-      completedAt: status === 'done' ? new Date() : undefined,
+      ...initialTaskActivityFields(initialStatus),
     });
 
     const populated = await ProjectTask.findById(task._id).populate(
@@ -849,6 +921,12 @@ export const updateProjectTask = async (req, res) => {
       task.completedAt = new Date();
     } else if (task.status !== 'done') {
       task.completedAt = null;
+    }
+
+    if (statusChanging) {
+      applyTaskStatusActivity(task, prevStatus);
+    } else {
+      applyTaskProgressTouch(task, prevStatus, statusChanging);
     }
 
     await task.save();

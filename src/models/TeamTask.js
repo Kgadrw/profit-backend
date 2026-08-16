@@ -77,6 +77,22 @@ const teamTaskSchema = new mongoose.Schema(
     completedAt: {
       type: Date,
     },
+    startedAt: {
+      type: Date,
+    },
+    activityEvents: {
+      type: [
+        {
+          at: { type: Date, required: true },
+          kind: {
+            type: String,
+            enum: ['created', 'started', 'progress', 'completed'],
+            required: true,
+          },
+        },
+      ],
+      default: [],
+    },
     sortOrder: {
       type: Number,
       default: 0,

@@ -7,6 +7,11 @@ import { buildListQuery, buildCreateScope, assertPageAccess } from '../utils/dat
 import { handleScopeError } from '../utils/scopeErrors.js';
 import { broadcastScopeChange } from '../utils/workspaceRealtime.js';
 import { assertCurrentUserIsAssignee } from '../utils/taskAssigneeAccess.js';
+import {
+  applyTaskProgressTouch,
+  applyTaskStatusActivity,
+  initialTaskActivityFields,
+} from '../utils/taskActivity.js';
 
 const DEFAULT_REMINDER_OFFSETS = [1440, 60];
 
@@ -223,6 +228,7 @@ export const createTeamTask = async (req, res) => {
     }
 
     const scope = buildCreateScope(req);
+    const initialStatus = status || 'todo';
     const task = await TeamTask.create({
       ...scope,
       assigneeId,
@@ -230,13 +236,14 @@ export const createTeamTask = async (req, res) => {
       title: title.trim(),
       description: description?.trim() || '',
       department: department || member.department || 'general',
-      status: status || 'todo',
+      status: initialStatus,
       priority: priority || 'medium',
       dueDate: dueDate ? new Date(dueDate) : undefined,
       reminders: normalizeReminders(reminders, Boolean(dueDate)),
       monthKey: monthKey || undefined,
       projectId: linkedProjectId,
       milestoneId: linkedMilestoneId,
+      ...initialTaskActivityFields(initialStatus),
     });
 
     const populated = await populateTask(TeamTask.findById(task._id));
@@ -325,6 +332,12 @@ export const updateTeamTask = async (req, res) => {
       task.completedAt = null;
     }
 
+    if (statusChanging) {
+      applyTaskStatusActivity(task, prevStatus);
+    } else {
+      applyTaskProgressTouch(task, prevStatus, statusChanging);
+    }
+
     await task.save();
     const populated = await populateTask(TeamTask.findById(task._id));
     await broadcastScopeChange(req, 'team-task:updated', populated);
@@ -345,10 +358,14 @@ export const completeTeamTask = async (req, res) => {
 
     const { completionNote } = req.body;
     const wasDone = task.status === 'done';
+    const prevStatus = task.status;
 
     task.status = 'done';
     task.completionNote = completionNote?.trim() || task.completionNote || '';
     task.completedAt = new Date();
+    if (!wasDone) {
+      applyTaskStatusActivity(task, prevStatus);
+    }
 
     await task.save();
 
