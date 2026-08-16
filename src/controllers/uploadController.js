@@ -503,6 +503,8 @@ const chatAttachmentExtensions = new Set([
   '.png',
   '.gif',
   '.webp',
+  '.heic',
+  '.heif',
   '.pdf',
   '.doc',
   '.docx',

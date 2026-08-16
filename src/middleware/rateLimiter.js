@@ -212,6 +212,14 @@ export const rateLimiters = {
     route: 'files'
   }),
 
+  // Gemini text assist: stricter (paid model calls)
+  aiText: createSmartRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_AI_TEXT_MAX || '20', 10),
+    message: 'Too many AI writing requests. Please try again later.',
+    route: 'ai-text'
+  }),
+
   // Admin: higher limit (300 requests per minute)
   admin: createSmartRateLimiter({
     windowMs: 60 * 1000,

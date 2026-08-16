@@ -394,7 +394,19 @@ export const acceptWorkspaceInvite = async (req, res) => {
     if (existing) {
       invite.status = 'accepted';
       await invite.save();
-      return res.json({ message: 'Already a member', workspaceId: invite.workspaceId });
+      const workspace = await Workspace.findById(invite.workspaceId).lean();
+      return res.json({
+        message: 'Already a member',
+        workspaceId: invite.workspaceId,
+        workspace: workspace
+          ? {
+              id: workspace._id,
+              name: workspace.name,
+              role: existing.role,
+              permissions: normalizePermissions(existing.permissions, existing.role),
+            }
+          : undefined,
+      });
     }
 
     await WorkspaceMember.create({

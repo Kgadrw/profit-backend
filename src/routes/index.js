@@ -56,6 +56,8 @@ import workspaceRoutes from './workspaceRoutes.js';
 import workspaceCategoryRoutes from './workspaceCategoryRoutes.js';
 import corporateCalendarRoutes from './corporateCalendarRoutes.js';
 import pushRoutes from './pushRoutes.js';
+import greetingRoutes from './greetingRoutes.js';
+import aiRoutes from './aiRoutes.js';
 
 const router = express.Router();
 
@@ -117,5 +119,7 @@ router.use('/workspaces', workspaceRoutes);
 router.use('/workspace-categories', workspaceCategoryRoutes);
 router.use('/corporate-calendar', corporateCalendarRoutes);
 router.use('/push', pushRoutes);
+router.use('/greetings', greetingRoutes);
+router.use('/ai', aiRoutes);
 
 export default router;
