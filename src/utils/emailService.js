@@ -263,6 +263,98 @@ export const sendClientScheduleNotification = async (client, schedule, senderUse
   });
 };
 
+export const sendUserScheduleDigest = async (user, schedules, senderUser) => {
+  const sender = senderUser || user;
+  const companyName = displayCompanyName(sender) || 'Notifications';
+  const senderEmail = sender?.email || '';
+  const count = schedules.length;
+  const subject = `You have ${count} schedule reminders`;
+
+  const paragraphs = schedules.map((schedule) => {
+    const dueText = formatDueDate(schedule.dueDate);
+    const amount = schedule.amount
+      ? ` · ${Number(schedule.amount).toLocaleString()} RWF`
+      : '';
+    return `<strong>${escapeHtml(schedule.title)}</strong> — due ${escapeHtml(dueText)}${amount}`;
+  });
+
+  const textParts = [
+    `Hello ${user.name},`,
+    '',
+    `You have ${count} schedule reminders:`,
+    ...schedules.map((schedule, index) => {
+      const dueText = formatDueDate(schedule.dueDate);
+      const amount = schedule.amount
+        ? ` (${Number(schedule.amount).toLocaleString()} RWF)`
+        : '';
+      return `${index + 1}. ${schedule.title} — due ${dueText}${amount}`;
+    }),
+  ];
+
+  return await sendEmail({
+    to: user.email,
+    subject,
+    text: textParts.join('\n'),
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(user.name)},`,
+      paragraphs: [
+        `You have ${count} schedule reminders:`,
+        ...paragraphs,
+      ],
+      closing: 'Best regards,',
+      senderUser: sender,
+    }),
+    fromName: companyName,
+    replyToEmail: senderEmail || undefined,
+  });
+};
+
+export const sendClientScheduleDigest = async (client, schedules, senderUser) => {
+  if (!client.email) {
+    return { success: false, message: 'Client does not have an email address' };
+  }
+
+  const companyName = displayCompanyName(senderUser) || 'Notifications';
+  const senderEmail = senderUser?.email || '';
+  const count = schedules.length;
+  const subject = `You have ${count} reminders`;
+
+  const paragraphs = schedules.map((schedule) => {
+    const dueText = formatDueDate(schedule.dueDate);
+    const amount = schedule.amount
+      ? ` · ${Number(schedule.amount).toLocaleString()} RWF`
+      : '';
+    return `<strong>${escapeHtml(schedule.title)}</strong> — due ${escapeHtml(dueText)}${amount}`;
+  });
+
+  const textParts = [
+    `Hello ${client.name},`,
+    '',
+    `You have ${count} reminders:`,
+    ...schedules.map((schedule, index) => {
+      const dueText = formatDueDate(schedule.dueDate);
+      const amount = schedule.amount
+        ? ` (${Number(schedule.amount).toLocaleString()} RWF)`
+        : '';
+      return `${index + 1}. ${schedule.title} — due ${dueText}${amount}`;
+    }),
+  ];
+
+  return await sendEmail({
+    to: client.email,
+    subject,
+    text: textParts.join('\n'),
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(client.name)},`,
+      paragraphs: [`You have ${count} reminders:`, ...paragraphs],
+      closing: 'Thank you,',
+      senderUser,
+    }),
+    fromName: companyName,
+    replyToEmail: senderEmail || undefined,
+  });
+};
+
 export const sendMonthlyPaymentReminder = async (user, plan, senderUser) => {
   if (!user?.email) {
     return { success: false, message: 'User does not have an email address' };
@@ -338,6 +430,49 @@ export const sendRecurringExpenseReminder = async (user, recurringExpense, conte
     html: plainEmailHtml({
       greeting: `Hello ${escapeHtml(user.name)},`,
       paragraphs,
+      closing: 'Best regards,',
+      senderUser: user,
+    }),
+    fromName: displayCompanyName(user) || 'Notifications',
+    replyToEmail: user.email || undefined,
+  });
+};
+
+export const sendRecurringExpenseDigest = async (user, items) => {
+  if (!user?.email || !items?.length) {
+    return { success: false, message: 'Nothing to send' };
+  }
+
+  if (items.length === 1) {
+    return sendRecurringExpenseReminder(user, items[0].expense, { stage: items[0].stage });
+  }
+
+  const subject = `You have ${items.length} expense reminders`;
+  const paragraphs = items.map(({ expense, stage }) => {
+    const amount = Number(expense.amount || 0);
+    const dueText = expense.nextDueDate ? formatDueDate(expense.nextDueDate) : 'soon';
+    const label = stage === 'due' ? 'Due now' : 'Upcoming';
+    return `<strong>${escapeHtml(expense.title)}</strong> — ${label} · ${amount.toLocaleString()} RWF · ${escapeHtml(dueText)}`;
+  });
+
+  const text = [
+    `Hello ${user.name},`,
+    '',
+    `You have ${items.length} expense reminders:`,
+    ...items.map(({ expense, stage }, index) => {
+      const amount = Number(expense.amount || 0);
+      const dueText = expense.nextDueDate ? formatDueDate(expense.nextDueDate) : 'soon';
+      return `${index + 1}. ${expense.title} (${stage === 'due' ? 'due now' : 'upcoming'}) — ${amount.toLocaleString()} RWF — ${dueText}`;
+    }),
+  ].join('\n');
+
+  return await sendEmail({
+    to: user.email,
+    subject,
+    text,
+    html: plainEmailHtml({
+      greeting: `Hello ${escapeHtml(user.name)},`,
+      paragraphs: [`You have ${items.length} expense reminders:`, ...paragraphs],
       closing: 'Best regards,',
       senderUser: user,
     }),

@@ -3,9 +3,9 @@ import cron from 'node-cron';
 import Schedule from '../models/Schedule.js';
 import User from '../models/User.js';
 import Client from '../models/Client.js';
-import { sendUserScheduleNotification, sendClientScheduleNotification } from './emailService.js';
+import { sendUserScheduleNotification, sendClientScheduleNotification, sendUserScheduleDigest, sendClientScheduleDigest } from './emailService.js';
 import Notification from '../models/Notification.js';
-import { sendMonthlyPaymentReminder, sendRecurringExpenseReminder } from './emailService.js';
+import { sendMonthlyPaymentReminder, sendRecurringExpenseReminder, sendRecurringExpenseDigest } from './emailService.js';
 import RecurringExpense from '../models/RecurringExpense.js';
 import {
   advanceRecurringExpense,
@@ -58,6 +58,11 @@ const checkAndSendNotifications = async () => {
 
     console.log(`Checking ${schedulesToCheck.length} schedules for notifications at ${now.toISOString()}`);
 
+    // Batch emails that fire in the same minute for the same recipient.
+    const userDigest = new Map(); // userId -> { user, schedules: [] }
+    const clientDigest = new Map(); // clientEmail -> { client, senderUser, schedules: [] }
+    const schedulesToMark = [];
+
     for (const schedule of schedulesToCheck) {
       const dueDate = new Date(schedule.dueDate);
       const nowDate = new Date(now);
@@ -91,30 +96,61 @@ const checkAndSendNotifications = async () => {
           continue;
         }
 
-        // Send notification to user if enabled
-        if (schedule.notifyUser) {
-          try {
-            await sendUserScheduleNotification(user, schedule, user);
-            console.log(`✅ Sent user notification for schedule: ${schedule.title} at ${now.toISOString()}`);
-          } catch (error) {
-            console.error(`Error sending user notification:`, error);
-          }
+        if (schedule.notifyUser && user.email) {
+          const key = String(user._id);
+          const existing = userDigest.get(key) || { user, schedules: [] };
+          existing.schedules.push(schedule);
+          userDigest.set(key, existing);
         }
 
-        // Send notification to client if enabled and client exists
-        if (schedule.notifyClient && schedule.clientId) {
-          try {
-            await sendClientScheduleNotification(schedule.clientId, schedule, user);
-            console.log(`✅ Sent client notification for schedule: ${schedule.title} at ${now.toISOString()}`);
-          } catch (error) {
-            console.error(`Error sending client notification:`, error);
-          }
+        if (schedule.notifyClient && schedule.clientId?.email) {
+          const key = String(schedule.clientId.email).toLowerCase();
+          const existing = clientDigest.get(key) || {
+            client: schedule.clientId,
+            senderUser: user,
+            schedules: [],
+          };
+          existing.schedules.push(schedule);
+          clientDigest.set(key, existing);
         }
 
-        // Update lastNotified with exact current time
-        schedule.lastNotified = new Date();
-        await schedule.save();
+        schedulesToMark.push(schedule);
       }
+    }
+
+    for (const entry of userDigest.values()) {
+      try {
+        if (entry.schedules.length === 1) {
+          await sendUserScheduleNotification(entry.user, entry.schedules[0], entry.user);
+        } else {
+          await sendUserScheduleDigest(entry.user, entry.schedules, entry.user);
+        }
+        console.log(
+          `✅ Sent user schedule digest (${entry.schedules.length}) to ${entry.user.email}`,
+        );
+      } catch (error) {
+        console.error(`Error sending user schedule digest:`, error);
+      }
+    }
+
+    for (const entry of clientDigest.values()) {
+      try {
+        if (entry.schedules.length === 1) {
+          await sendClientScheduleNotification(entry.client, entry.schedules[0], entry.senderUser);
+        } else {
+          await sendClientScheduleDigest(entry.client, entry.schedules, entry.senderUser);
+        }
+        console.log(
+          `✅ Sent client schedule digest (${entry.schedules.length}) to ${entry.client.email}`,
+        );
+      } catch (error) {
+        console.error(`Error sending client schedule digest:`, error);
+      }
+    }
+
+    for (const schedule of schedulesToMark) {
+      schedule.lastNotified = new Date();
+      await schedule.save();
     }
   } catch (error) {
     console.error('Error in schedule notification check:', error);
@@ -297,6 +333,8 @@ const checkRecurringExpenses = async () => {
 
     console.log(`Checking ${recurringItems.length} recurring expenses at ${now.toISOString()}`);
 
+    const digestByUser = new Map(); // userId -> { user, items: [] }
+
     for (const item of recurringItems) {
       const dueDate = normalizeDateStart(item.nextDueDate);
       const diffDays = daysBetweenDates(today, dueDate);
@@ -316,7 +354,10 @@ const checkRecurringExpenses = async () => {
       const isOverdue = diffDays < 0;
 
       if (shouldSendAdvance && !reminderSentToday(item.lastNotifiedAt, 'advance', item.lastReminderStage)) {
-        await sendRecurringExpenseReminder(user, item, { stage: 'advance' });
+        const key = String(user._id);
+        const existing = digestByUser.get(key) || { user, items: [] };
+        existing.items.push({ expense: item, stage: 'advance' });
+        digestByUser.set(key, existing);
         await Notification.create({
           userId: user._id,
           sentBy: 'system',
@@ -330,12 +371,14 @@ const checkRecurringExpenses = async () => {
         item.lastNotifiedAt = new Date();
         item.lastReminderStage = 'advance';
         await item.save();
-        console.log(`✅ Sent advance reminder for recurring expense: ${item.title}`);
       }
 
       if ((shouldSendDue || isOverdue) && item.notifyEmail) {
         if (!reminderSentToday(item.lastNotifiedAt, 'due', item.lastReminderStage)) {
-          await sendRecurringExpenseReminder(user, item, { stage: 'due' });
+          const key = String(user._id);
+          const existing = digestByUser.get(key) || { user, items: [] };
+          existing.items.push({ expense: item, stage: 'due' });
+          digestByUser.set(key, existing);
           await Notification.create({
             userId: user._id,
             sentBy: 'system',
@@ -349,7 +392,6 @@ const checkRecurringExpenses = async () => {
           item.lastNotifiedAt = new Date();
           item.lastReminderStage = 'due';
           await item.save();
-          console.log(`✅ Sent due reminder for recurring expense: ${item.title}`);
         }
       }
 
@@ -360,8 +402,18 @@ const checkRecurringExpenses = async () => {
       }
 
       if (isOverdue && !item.autoRecord && !item.notifyEmail) {
-        // Keep overdue items visible; no email configured
         continue;
+      }
+    }
+
+    for (const entry of digestByUser.values()) {
+      try {
+        await sendRecurringExpenseDigest(entry.user, entry.items);
+        console.log(
+          `✅ Sent recurring expense digest (${entry.items.length}) to ${entry.user.email}`,
+        );
+      } catch (error) {
+        console.error('Error sending recurring expense digest:', error);
       }
     }
   } catch (error) {

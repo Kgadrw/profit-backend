@@ -23,7 +23,24 @@ function formatWhen(date) {
   });
 }
 
-async function deliverReminder({ userId, email, title, body, type, data }) {
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function queueDigestItem(digestByUser, { userId, email, title, body, href }) {
+  if (!userId || !email) return;
+  const key = String(userId);
+  const existing = digestByUser.get(key) || { email, items: [] };
+  existing.email = email;
+  existing.items.push({ title, body, href });
+  digestByUser.set(key, existing);
+}
+
+async function deliverReminderInApp({ userId, title, body, type, data }) {
   if (!userId) return;
 
   await Notification.create({
@@ -45,20 +62,45 @@ async function deliverReminder({ userId, email, title, body, type, data }) {
     tag: `${type}-${data.id}-${data.offsetMinutes}`,
     data: { href: data.href, ...data },
   });
+}
 
-  if (email) {
+async function flushReminderDigests(digestByUser) {
+  const frontend = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+
+  for (const entry of digestByUser.values()) {
+    if (!entry.email || !entry.items.length) continue;
+
+    const count = entry.items.length;
+    const subject =
+      count === 1 ? entry.items[0].title : `You have ${count} reminders`;
+
+    const textLines = entry.items.map(
+      (item, index) => `${index + 1}. ${item.title}: ${item.body}`,
+    );
+    const listHtml = entry.items
+      .map((item) => {
+        const link = item.href
+          ? `<br/><a href="${escapeHtml(frontend + item.href)}" style="color:#2563eb;">Open</a>`
+          : '';
+        return `<li style="margin:0 0 10px 0;"><strong>${escapeHtml(item.title)}</strong><br/>${escapeHtml(item.body)}${link}</li>`;
+      })
+      .join('');
+
     await sendEmail({
-      to: email,
-      subject: title,
-      text: body,
-      html: `<p style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#111;">${body}</p>
-        <p style="font-family:Arial,sans-serif;font-size:14px;"><a href="${process.env.FRONTEND_URL || ''}${data.href}">Open in Trippo</a></p>`,
+      to: entry.email,
+      subject,
+      text: ['Your Trippo reminders:', '', ...textLines].join('\n'),
+      html: `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#111;">
+        <p style="margin:0 0 16px 0;">Here are your reminders:</p>
+        <ul style="margin:0;padding-left:18px;">${listHtml}</ul>
+        <p style="margin:20px 0 0 0;font-size:14px;color:#555;">— Trippo</p>
+      </div>`,
       fromName: 'Trippo reminders',
     });
   }
 }
 
-async function sendDueCalendarReminders(now) {
+async function sendDueCalendarReminders(now, digestByUser) {
   const events = await CalendarEvent.find({
     status: 'scheduled',
     startDate: { $gte: new Date(now.getTime() - 2 * 24 * 60 * MINUTE) },
@@ -76,19 +118,28 @@ async function sendDueCalendarReminders(now) {
     const owner = await User.findById(event.userId).select('email');
     for (const reminder of reminders) {
       if (!reminderIsDue(event.startDate, reminder, now)) continue;
+      const title = event.eventType === 'meeting' ? 'Meeting reminder' : 'Calendar reminder';
       const body = `"${event.title}" starts ${formatWhen(event.startDate)}.`;
-      await deliverReminder({
+      const data = {
+        id: String(event._id),
+        eventId: String(event._id),
+        offsetMinutes: reminder.offsetMinutes,
+        href: '/calendar/view',
+      };
+
+      await deliverReminderInApp({
         userId: event.userId,
-        email: owner?.email,
-        title: event.eventType === 'meeting' ? 'Meeting reminder' : 'Calendar reminder',
+        title,
         body,
         type: 'calendar_reminder',
-        data: {
-          id: String(event._id),
-          eventId: String(event._id),
-          offsetMinutes: reminder.offsetMinutes,
-          href: '/calendar/view',
-        },
+        data,
+      });
+      queueDigestItem(digestByUser, {
+        userId: event.userId,
+        email: owner?.email,
+        title,
+        body,
+        href: data.href,
       });
       reminder.sentAt = now;
       changed = true;
@@ -97,7 +148,7 @@ async function sendDueCalendarReminders(now) {
   }
 }
 
-async function sendDueTaskReminders(now) {
+async function sendDueTaskReminders(now, digestByUser) {
   const tasks = await TeamTask.find({
     status: { $ne: 'done' },
     dueDate: { $gte: new Date(now.getTime() - 2 * 24 * 60 * MINUTE) },
@@ -115,6 +166,7 @@ async function sendDueTaskReminders(now) {
 
     for (const reminder of reminders) {
       if (!reminderIsDue(task.dueDate, reminder, now)) continue;
+      const title = 'Task deadline reminder';
       const body = `Deadline approaching: "${task.title}" is due ${formatWhen(task.dueDate)}.`;
       for (const recipientId of recipientIds) {
         const user = await User.findById(recipientId).select('email');
@@ -122,18 +174,25 @@ async function sendDueTaskReminders(now) {
           String(recipientId) === String(member?.linkedUserId)
             ? member?.email || user?.email
             : user?.email;
-        await deliverReminder({
+        const data = {
+          id: String(task._id),
+          taskId: String(task._id),
+          offsetMinutes: reminder.offsetMinutes,
+          href: '/team/tasks',
+        };
+        await deliverReminderInApp({
           userId: recipientId,
-          email,
-          title: 'Task deadline reminder',
+          title,
           body,
           type: 'task_deadline_reminder',
-          data: {
-            id: String(task._id),
-            taskId: String(task._id),
-            offsetMinutes: reminder.offsetMinutes,
-            href: '/team/tasks',
-          },
+          data,
+        });
+        queueDigestItem(digestByUser, {
+          userId: recipientId,
+          email,
+          title,
+          body,
+          href: data.href,
         });
       }
       reminder.sentAt = now;
@@ -145,7 +204,10 @@ async function sendDueTaskReminders(now) {
 
 export async function dispatchWorkReminders(now = new Date()) {
   try {
-    await Promise.all([sendDueCalendarReminders(now), sendDueTaskReminders(now)]);
+    const digestByUser = new Map();
+    await sendDueCalendarReminders(now, digestByUser);
+    await sendDueTaskReminders(now, digestByUser);
+    await flushReminderDigests(digestByUser);
   } catch (error) {
     console.error('Error dispatching work reminders:', error);
   }

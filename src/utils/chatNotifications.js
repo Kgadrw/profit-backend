@@ -140,53 +140,88 @@ export async function notifyDirectMessageRecipient({
   });
 }
 
-function unreadEmailHtml({ recipientName, senderName, workspaceName, deepLink }) {
-  const safeSender = String(senderName || 'a teammate');
-  const safeWorkspace = String(workspaceName || 'your workspace');
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function unreadDigestHtml({ recipientName, items }) {
+  const list = items
+    .map((item) => {
+      const safeSender = escapeHtml(item.senderName || 'a teammate');
+      const safeWorkspace = escapeHtml(item.workspaceName || 'your workspace');
+      const link = escapeHtml(item.deepLink);
+      return `<li style="margin:0 0 10px 0;">From <strong>${safeSender}</strong> in <strong>${safeWorkspace}</strong>
+        — <a href="${link}" style="color:#2563eb;">Open</a></li>`;
+    })
+    .join('');
+
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
   <div style="max-width:560px;margin:0 auto;padding:28px 20px;color:#111;">
-    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">Hello${recipientName ? ` ${recipientName}` : ''},</p>
+    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">Hello${recipientName ? ` ${escapeHtml(recipientName)}` : ''},</p>
     <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
-      There is some unread message from <strong>${safeSender}</strong> in <strong>${safeWorkspace}</strong>.
+      You have ${items.length} unread message${items.length === 1 ? '' : 's'}:
     </p>
-    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
-      <a href="${deepLink}" style="color:#2563eb;">Open messages</a>
-    </p>
+    <ul style="margin:0;padding-left:18px;font-size:15px;line-height:1.6;">${list}</ul>
     <p style="margin:24px 0 0 0;font-size:14px;line-height:1.5;color:#555;">— Trippo</p>
   </div>
 </body>
 </html>`;
 }
 
-async function sendUnreadReminderEmail({ user, senderName, workspaceName, deepLink }) {
-  if (!user?.email) return false;
-  const subject = `Unread message from ${senderName || 'a teammate'}`;
-  const text = `There is some unread message from ${senderName || 'a teammate'} in ${workspaceName || 'your workspace'}. Open: ${deepLink}`;
+async function sendUnreadDigestEmail({ user, items }) {
+  if (!user?.email || !items.length) return false;
+  const subject =
+    items.length === 1
+      ? `Unread message from ${items[0].senderName || 'a teammate'}`
+      : `You have ${items.length} unread messages`;
+  const text = [
+    `Hello${user.name ? ` ${user.name}` : ''},`,
+    '',
+    `You have ${items.length} unread message${items.length === 1 ? '' : 's'}:`,
+    ...items.map(
+      (item, index) =>
+        `${index + 1}. From ${item.senderName || 'a teammate'} in ${item.workspaceName || 'your workspace'} — ${item.deepLink}`,
+    ),
+  ].join('\n');
+
   await sendEmail({
     to: user.email,
     subject,
     text,
-    html: unreadEmailHtml({
-      recipientName: user.name,
-      senderName,
-      workspaceName,
-      deepLink,
-    }),
+    html: unreadDigestHtml({ recipientName: user.name, items }),
   });
   return true;
 }
 
+function queueUnreadItem(digestByUser, user, item, messageId) {
+  const key = String(user._id);
+  const existing = digestByUser.get(key) || {
+    user,
+    items: [],
+    messageMarks: [],
+  };
+  existing.items.push(item);
+  existing.messageMarks.push({ messageId, userId: user._id });
+  digestByUser.set(key, existing);
+}
+
 /**
  * Email users who still have messages unread for 24+ hours.
- * One reminder per message per recipient (tracked on the message document).
+ * One digest email per recipient (tracks reminded users on each message).
  */
 export async function checkUnreadMessageEmailReminders() {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const baseUrl = getFrontendBaseUrl().replace(/\/$/, '');
-  let sent = 0;
+  const digestByUser = new Map();
+  const groupMarks = new Map();
+  const dmMarks = new Map();
 
   const groupCandidates = await WorkspaceMessage.find({
     createdAt: { $lte: cutoff },
@@ -216,30 +251,21 @@ export async function checkUnreadMessageEmailReminders() {
     const workspace = await Workspace.findById(message.workspaceId).select('name').lean();
     const users = await User.find({ _id: { $in: recipients } }).select('name email').lean();
     const deepLink = `${baseUrl}/messages/group`;
-    const remindedNow = [];
 
     for (const user of users) {
-      try {
-        const ok = await sendUnreadReminderEmail({
-          user,
+      queueUnreadItem(
+        digestByUser,
+        user,
+        {
           senderName: message.senderName,
           workspaceName: workspace?.name,
           deepLink,
-        });
-        if (ok) {
-          remindedNow.push(user._id);
-          sent += 1;
-        }
-      } catch (error) {
-        console.error('Unread group message email failed:', error);
-      }
-    }
-
-    if (remindedNow.length) {
-      await WorkspaceMessage.updateOne(
-        { _id: message._id },
-        { $addToSet: { unreadEmailRemindedUserIds: { $each: remindedNow } } },
+        },
+        String(message._id),
       );
+      const marks = groupMarks.get(String(message._id)) || [];
+      marks.push(user._id);
+      groupMarks.set(String(message._id), marks);
     }
   }
 
@@ -273,35 +299,67 @@ export async function checkUnreadMessageEmailReminders() {
     const workspace = await Workspace.findById(message.workspaceId).select('name').lean();
     const users = await User.find({ _id: { $in: recipients } }).select('name email').lean();
     const deepLink = `${baseUrl}/messages/${message.senderUserId}`;
-    const remindedNow = [];
 
     for (const user of users) {
-      try {
-        const ok = await sendUnreadReminderEmail({
-          user,
+      queueUnreadItem(
+        digestByUser,
+        user,
+        {
           senderName: message.senderName,
           workspaceName: workspace?.name,
           deepLink,
-        });
-        if (ok) {
-          remindedNow.push(user._id);
-          sent += 1;
-        }
-      } catch (error) {
-        console.error('Unread DM email failed:', error);
-      }
-    }
-
-    if (remindedNow.length) {
-      await WorkspaceDirectMessage.updateOne(
-        { _id: message._id },
-        { $addToSet: { unreadEmailRemindedUserIds: { $each: remindedNow } } },
+        },
+        String(message._id),
       );
+      const marks = dmMarks.get(String(message._id)) || [];
+      marks.push(user._id);
+      dmMarks.set(String(message._id), marks);
     }
   }
 
+  let sent = 0;
+  const successfullyReminded = new Set();
+
+  for (const entry of digestByUser.values()) {
+    try {
+      const ok = await sendUnreadDigestEmail({
+        user: entry.user,
+        items: entry.items,
+      });
+      if (!ok) continue;
+      sent += 1;
+      for (const mark of entry.messageMarks) {
+        successfullyReminded.add(`${mark.messageId}:${String(mark.userId)}`);
+      }
+    } catch (error) {
+      console.error('Unread digest email failed:', error);
+    }
+  }
+
+  for (const [messageId, userIds] of groupMarks.entries()) {
+    const remindedNow = userIds.filter((id) =>
+      successfullyReminded.has(`${messageId}:${String(id)}`),
+    );
+    if (!remindedNow.length) continue;
+    await WorkspaceMessage.updateOne(
+      { _id: messageId },
+      { $addToSet: { unreadEmailRemindedUserIds: { $each: remindedNow } } },
+    );
+  }
+
+  for (const [messageId, userIds] of dmMarks.entries()) {
+    const remindedNow = userIds.filter((id) =>
+      successfullyReminded.has(`${messageId}:${String(id)}`),
+    );
+    if (!remindedNow.length) continue;
+    await WorkspaceDirectMessage.updateOne(
+      { _id: messageId },
+      { $addToSet: { unreadEmailRemindedUserIds: { $each: remindedNow } } },
+    );
+  }
+
   if (sent > 0) {
-    console.log(`Unread message email reminders sent: ${sent}`);
+    console.log(`Unread message email digests sent: ${sent}`);
   }
   return sent;
 }

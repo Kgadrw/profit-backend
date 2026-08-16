@@ -536,6 +536,37 @@ export const chatAttachmentUpload = multer({
   },
 });
 
+/**
+ * Group chat attachments store files under conversationId === workspaceId.
+ * Direct chat attachments use the real conversation ObjectId.
+ */
+async function assertChatAttachmentAccess(workspaceId, conversationId, userId) {
+  const membership = await WorkspaceMember.findOne({ workspaceId, userId });
+  if (!membership) return { ok: false, status: 403, error: 'Access denied' };
+
+  // Workspace group-chat attachment scope (not a DM conversation id).
+  if (String(conversationId) === String(workspaceId)) {
+    return { ok: true };
+  }
+
+  const conversation = await WorkspaceDirectConversation.findOne({
+    _id: conversationId,
+    workspaceId,
+  }).lean();
+  if (!conversation) {
+    return { ok: false, status: 404, error: 'Conversation not found' };
+  }
+
+  const isParticipant = (conversation.participantIds || []).some(
+    (participantId) => String(participantId) === String(userId),
+  );
+  if (!isParticipant) {
+    return { ok: false, status: 403, error: 'Access denied' };
+  }
+
+  return { ok: true };
+}
+
 export const getChatAttachmentFile = async (req, res) => {
   try {
     const { workspaceId, conversationId, filename } = req.params;
@@ -559,21 +590,9 @@ export const getChatAttachmentFile = async (req, res) => {
       }
     }
 
-    const membership = await WorkspaceMember.findOne({ workspaceId, userId });
-    if (!membership) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    const conversation = await WorkspaceDirectConversation.findOne({ _id: conversationId, workspaceId }).lean();
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const isParticipant = (conversation.participantIds || []).some(
-      (participantId) => String(participantId) === String(userId),
-    );
-    if (!isParticipant) {
-      return res.status(403).json({ error: 'Access denied' });
+    const access = await assertChatAttachmentAccess(workspaceId, conversationId, userId);
+    if (!access.ok) {
+      return res.status(access.status).json({ error: access.error });
     }
 
     const stored = await getStoredChatAttachment(workspaceId, conversationId, filename);
@@ -581,6 +600,9 @@ export const getChatAttachmentFile = async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
+    // Allow in-app iframe/object preview from the web app origin.
+    res.removeHeader('X-Frame-Options');
+    res.set('Content-Security-Policy', "frame-ancestors *");
     res.set('Cache-Control', 'private, max-age=3600');
     return sendStoredFile(res, stored);
   } catch (error) {
@@ -608,24 +630,9 @@ export const issueFileAccessToken = async (req, res) => {
 
     if (parsed.kind === 'chat-attachment') {
       const { workspaceId, conversationId, filename } = parsed;
-      const membership = await WorkspaceMember.findOne({ workspaceId, userId });
-      if (!membership) {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      const conversation = await WorkspaceDirectConversation.findOne({
-        _id: conversationId,
-        workspaceId,
-      }).lean();
-      if (!conversation) {
-        return res.status(404).json({ error: 'Conversation not found' });
-      }
-
-      const isParticipant = (conversation.participantIds || []).some(
-        (participantId) => String(participantId) === String(userId),
-      );
-      if (!isParticipant) {
-        return res.status(403).json({ error: 'Access denied' });
+      const access = await assertChatAttachmentAccess(workspaceId, conversationId, userId);
+      if (!access.ok) {
+        return res.status(access.status).json({ error: access.error });
       }
 
       const resourceKey = buildFileResourceKey('chat-attachment', [
