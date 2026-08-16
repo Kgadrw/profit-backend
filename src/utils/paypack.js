@@ -409,7 +409,12 @@ export function mapPaypackStatus(status) {
   return 'PENDING';
 }
 
-/** How many open CASHIN prompts Paypack still has for this phone. */
+/** How many open CASHIN prompts Paypack still has for this phone.
+ *  Only counts recent pending events — Paypack often keeps months-old
+ *  `transaction:created` rows as status=pending even after MTN expired them.
+ */
+const PENDING_CASHIN_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 export async function getPaypackPendingCashinCount(client) {
   const normalized = normalizePhoneNumber(client);
   if (!normalized) return 0;
@@ -419,7 +424,23 @@ export async function getPaypackPendingCashinCount(client) {
       kind: 'CASHIN',
       status: 'pending',
     });
-    return Number(ev.total) || 0;
+    const items = Array.isArray(ev?.transactions) ? ev.transactions : [];
+    if (!items.length) {
+      // Do not trust bare `total` — it includes stale ghosts with no usable rows.
+      return 0;
+    }
+
+    const cutoff = Date.now() - PENDING_CASHIN_MAX_AGE_MS;
+    let count = 0;
+    for (const item of items) {
+      const status = item?.data?.status || item?.status;
+      if (mapPaypackStatus(status) !== 'PENDING') continue;
+      const created = item?.data?.created_at || item?.created_at;
+      const ts = created ? new Date(created).getTime() : NaN;
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      count += 1;
+    }
+    return count;
   } catch {
     return 0;
   }
