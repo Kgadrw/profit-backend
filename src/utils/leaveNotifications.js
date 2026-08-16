@@ -2,7 +2,15 @@ import WorkspaceMember from '../models/WorkspaceMember.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { emitToUser } from './websocket.js';
-import { sendEmail } from './emailService.js';
+import { sendEmail, renderEmailTemplate } from './emailService.js';
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 function formatLeaveRange(startDate, endDate) {
   const start = startDate ? new Date(startDate) : null;
@@ -89,16 +97,17 @@ export async function notifyLeaveReviewersOfNewRequest(leave, { workspaceId, act
         if (!reviewer.email) return;
 
         const text = `${body}\n\nOpen Trippo → Team → Leave to approve or reject.\n`;
-        const html = `
-          <p>Hello${reviewer.name ? ` ${reviewer.name}` : ''},</p>
-          <p><strong>${requesterName}</strong> submitted a leave request that needs your review.</p>
-          <ul>
-            <li><strong>Type:</strong> ${leaveType}</li>
-            <li><strong>Dates:</strong> ${range}</li>
-            ${leave.reason ? `<li><strong>Reason:</strong> ${String(leave.reason).slice(0, 300)}</li>` : ''}
-          </ul>
-          <p>Please open <strong>Team → Leave</strong> in Trippo to approve or reject.</p>
-        `;
+        const html = renderEmailTemplate({
+          eyebrow: 'LEAVE REQUEST',
+          title: 'Review requested',
+          greeting: `Hello${reviewer.name ? ` ${escapeHtml(reviewer.name)}` : ''},`,
+          paragraphs: [
+            `<strong>${escapeHtml(requesterName)}</strong> submitted a leave request that needs your review.`,
+            `<ul style="margin:0;padding-left:20px;line-height:1.7;"><li><strong>Type:</strong> ${escapeHtml(leaveType)}</li><li><strong>Dates:</strong> ${escapeHtml(range)}</li>${leave.reason ? `<li><strong>Reason:</strong> ${escapeHtml(String(leave.reason).slice(0, 300))}</li>` : ''}</ul>`,
+            'Open <strong>HR → Leave</strong> in Trippo to approve or reject the request.',
+          ],
+          closing: 'Regards,',
+        });
 
         try {
           await sendEmail({
@@ -166,18 +175,21 @@ export async function notifyLeaveRequesterOfDecision(leave, { actorUserId, decis
       to: user.email,
       subject: title,
       text: `${body}\n\nOpen Trippo → HR → Leave for details.\n`,
-      html: `
-        <p>Hello${user.name ? ` ${user.name}` : ''},</p>
-        <p>${body}</p>
-        ${
+      html: renderEmailTemplate({
+        eyebrow: 'LEAVE REQUEST',
+        title,
+        greeting: `Hello${user.name ? ` ${escapeHtml(user.name)}` : ''},`,
+        paragraphs: [
+          escapeHtml(body),
           (status === 'rejected' || status === 'changes_requested') && leave.rejectionNote
-            ? `<p><strong>Note:</strong> ${String(leave.rejectionNote).slice(0, 500)}</p>`
-            : ''
-        }
-        <p>Open <strong>HR → Leave</strong> in Trippo to ${
-          status === 'changes_requested' ? 'edit and resubmit' : 'view details'
-        }.</p>
-      `,
+            ? `<strong>Note:</strong> ${escapeHtml(String(leave.rejectionNote).slice(0, 500))}`
+            : '',
+          `Open <strong>HR → Leave</strong> in Trippo to ${
+            status === 'changes_requested' ? 'edit and resubmit' : 'view details'
+          }.`,
+        ],
+        closing: 'Regards,',
+      }),
     });
   } catch (error) {
     console.error('Failed to notify leave requester:', error);

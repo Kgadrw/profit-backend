@@ -1,7 +1,7 @@
 // Authentication Controller
 import User from '../models/User.js';
 import OTP from '../models/OTP.js';
-import { sendEmail } from '../utils/emailService.js';
+import { sendEmail, renderEmailTemplate } from '../utils/emailService.js';
 import Sale from '../models/Sale.js';
 import mongoose from 'mongoose';
 import { SUBSCRIPTION_AMOUNT } from '../utils/paymentPlanUtils.js';
@@ -115,41 +115,18 @@ async function createGoogleUser(profile) {
 }
 
 function buildOtpEmailHtml({ title, greeting, bodyText, otpCode }) {
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-      <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-        <tr>
-          <td style="padding: 40px 20px;">
-            <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-              <tr>
-                <td style="background-color: #ffffff; padding: 30px; text-align: center;">
-                  <h1 style="color: #1e293b; margin: 0 0 20px 0; font-size: 24px; font-weight: 600;">${title}</h1>
-                  <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">${greeting}</p>
-                  <p style="color: #475569; margin: 0 0 30px 0; font-size: 16px; line-height: 1.6;">${bodyText}</p>
-                  <div style="background-color: #eff6ff; border: 2px solid #2563eb; border-radius: 8px; padding: 20px; margin: 30px 0;">
-                    <p style="color: #1e293b; margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Your verification code</p>
-                    <p style="color: #2563eb; margin: 0; font-size: 32px; font-weight: 700; letter-spacing: 8px; font-family: monospace;">${otpCode}</p>
-                  </div>
-                  <p style="color: #64748b; margin: 20px 0 0 0; font-size: 14px; line-height: 1.6;">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
-                  <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                    <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                    <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">Trippo ltd team</p>
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-  `;
+  return renderEmailTemplate({
+    eyebrow: 'ACCOUNT SECURITY',
+    title,
+    greeting,
+    paragraphs: [
+      bodyText,
+      `<span style="display:block;padding:16px;border:2px solid #20a39e;border-radius:6px;background:#f3fbfa;text-align:center;font-family:monospace;font-size:30px;font-weight:700;letter-spacing:7px;color:#0f3d5e;">${otpCode}</span>`,
+      '<span style="font-size:13px;color:#667085;">This code expires in 10 minutes. If you did not request it, you can safely ignore this email.</span>',
+    ],
+    closing: 'Best regards,',
+    senderUser: { businessName: 'Trippo team' },
+  });
 }
 
 async function createAndSendOtp({ email, purpose, subject, title, greeting, bodyText, textPrefix }) {

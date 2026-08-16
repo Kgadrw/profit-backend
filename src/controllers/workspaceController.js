@@ -3,7 +3,11 @@ import Workspace from '../models/Workspace.js';
 import WorkspaceMember from '../models/WorkspaceMember.js';
 import WorkspaceInvite from '../models/WorkspaceInvite.js';
 import User from '../models/User.js';
-import { sendEmail } from '../utils/emailService.js';
+import {
+  sendEmail,
+  getFrontendBaseUrl,
+  renderEmailTemplate,
+} from '../utils/emailService.js';
 import { emitToUser } from '../utils/websocket.js';
 import Notification from '../models/Notification.js';
 import {
@@ -14,8 +18,12 @@ import {
 import { syncTeamMembersFromWorkspace } from '../utils/syncTeamFromWorkspace.js';
 import TeamMember from '../models/TeamMember.js';
 
-function getFrontendBaseUrl() {
-  return process.env.FRONTEND_URL || 'http://localhost:8080';
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 async function getMembership(workspaceId, userId) {
@@ -304,21 +312,24 @@ export const inviteToWorkspace = async (req, res) => {
       ? `${inviterName} invited you to join workspace "${workspace.name}" on Trippo. You also have a notification in the app. Accept: ${inviteUrl}`
       : `${inviterName} invited you to join workspace "${workspace.name}" on Trippo. Create your account and accept: ${inviteUrl}`;
 
-    const emailHtml = hasAccount
-      ? `
-        <p>Hello,</p>
-        <p><strong>${inviterName}</strong> invited you to join the workspace <strong>${workspace.name}</strong> on Trippo.</p>
-        <p>You also received this invitation in your Trippo notifications.</p>
-        <p><a href="${inviteUrl}">Accept invitation</a></p>
-        <p>This link expires in 7 days.</p>
-      `
-      : `
-        <p>Hello,</p>
-        <p><strong>${inviterName}</strong> invited you to join the workspace <strong>${workspace.name}</strong> on Trippo.</p>
-        <p>Create your Trippo account with this email address, then accept the invitation:</p>
-        <p><a href="${inviteUrl}">Accept invitation</a></p>
-        <p>This link expires in 7 days.</p>
-      `;
+    const emailHtml = renderEmailTemplate({
+      eyebrow: 'WORKSPACE INVITATION',
+      title: `Join ${workspace.name}`,
+      greeting: 'Hello,',
+      paragraphs: hasAccount
+        ? [
+          `<strong>${escapeHtml(inviterName)}</strong> invited you to join the <strong>${escapeHtml(workspace.name)}</strong> workspace on Trippo.`,
+          'You can also find this invitation in your Trippo notifications.',
+        ]
+        : [
+          `<strong>${escapeHtml(inviterName)}</strong> invited you to join the <strong>${escapeHtml(workspace.name)}</strong> workspace on Trippo.`,
+          'Create your Trippo account with this email address, then accept the invitation.',
+        ],
+      actionUrl: inviteUrl,
+      actionText: 'Accept invitation',
+      closing: 'Welcome,',
+      footerNote: 'This invitation expires in 7 days.',
+    });
 
     await sendEmail({
       to: normalizedEmail,

@@ -1,8 +1,16 @@
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { emitToUser } from './websocket.js';
-import { sendEmail } from './emailService.js';
+import { sendEmail, renderEmailTemplate } from './emailService.js';
 import { financePathForEntity } from './approvalWorkflow.js';
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 function entityLabel(entityType) {
   switch (entityType) {
@@ -68,12 +76,17 @@ export async function notifySubmitterOfChangesRequested(record, {
       to: user.email,
       subject: title,
       text: `${body}\n\nOpen Trippo to edit and resubmit.\n`,
-      html: `
-        <p>Hello${user.name ? ` ${user.name}` : ''},</p>
-        <p>${reviewer} requested changes on your <strong>${entityLabel(entityType)}</strong> <strong>${titleText}</strong>.</p>
-        ${noteText ? `<p><strong>Note:</strong> ${String(noteText).slice(0, 500)}</p>` : ''}
-        <p>Please open Trippo, edit the item, and resubmit it for approval.</p>
-      `,
+      html: renderEmailTemplate({
+        eyebrow: 'APPROVAL UPDATE',
+        title: 'Changes requested',
+        greeting: `Hello${user.name ? ` ${escapeHtml(user.name)}` : ''},`,
+        paragraphs: [
+          `${escapeHtml(reviewer)} requested changes on your <strong>${escapeHtml(entityLabel(entityType))}</strong> <strong>${escapeHtml(titleText)}</strong>.`,
+          noteText ? `<strong>Note:</strong> ${escapeHtml(String(noteText).slice(0, 500))}` : '',
+          'Open Trippo, edit the item, and resubmit it for approval.',
+        ],
+        closing: 'Regards,',
+      }),
     });
   } catch (error) {
     console.error('Failed to notify submitter of requested changes:', error);

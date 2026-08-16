@@ -6,11 +6,7 @@ import WorkspaceDirectConversation from '../models/WorkspaceDirectConversation.j
 import WorkspaceMember from '../models/WorkspaceMember.js';
 import Workspace from '../models/Workspace.js';
 import { emitToUser } from './websocket.js';
-import { sendEmail } from './emailService.js';
-
-function getFrontendBaseUrl() {
-  return process.env.FRONTEND_URL || 'http://localhost:8080';
-}
+import { sendEmail, getFrontendBaseUrl, renderEmailTemplate } from './emailService.js';
 
 function previewText(body, max = 120) {
   const text = String(body || '').trim().replace(/\s+/g, ' ');
@@ -154,25 +150,21 @@ function unreadDigestHtml({ recipientName, items }) {
       const safeSender = escapeHtml(item.senderName || 'a teammate');
       const safeWorkspace = escapeHtml(item.workspaceName || 'your workspace');
       const link = escapeHtml(item.deepLink);
-      return `<li style="margin:0 0 10px 0;">From <strong>${safeSender}</strong> in <strong>${safeWorkspace}</strong>
-        — <a href="${link}" style="color:#2563eb;">Open</a></li>`;
+      return `<li style="margin:0 0 12px;">From <strong>${safeSender}</strong> in <strong>${safeWorkspace}</strong><br>
+        <a href="${link}" style="color:#0f3d5e;font-weight:700;text-decoration:underline;">Open message</a></li>`;
     })
     .join('');
 
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
-  <div style="max-width:560px;margin:0 auto;padding:28px 20px;color:#111;">
-    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">Hello${recipientName ? ` ${escapeHtml(recipientName)}` : ''},</p>
-    <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
-      You have ${items.length} unread message${items.length === 1 ? '' : 's'}:
-    </p>
-    <ul style="margin:0;padding-left:18px;font-size:15px;line-height:1.6;">${list}</ul>
-    <p style="margin:24px 0 0 0;font-size:14px;line-height:1.5;color:#555;">— Trippo</p>
-  </div>
-</body>
-</html>`;
+  return renderEmailTemplate({
+    eyebrow: 'MESSAGES',
+    title: 'Unread messages',
+    greeting: `Hello${recipientName ? ` ${escapeHtml(recipientName)}` : ''},`,
+    paragraphs: [
+      `You have ${items.length} unread message${items.length === 1 ? '' : 's'}:`,
+      `<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;color:#243044;">${list}</ul>`,
+    ],
+    closing: 'Stay connected,',
+  });
 }
 
 async function sendUnreadDigestEmail({ user, items }) {

@@ -3,7 +3,7 @@ import TeamTask from '../models/TeamTask.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { sendPushToUser } from './pushNotifications.js';
-import { sendEmail } from './emailService.js';
+import { sendEmail, getFrontendBaseUrl, renderEmailTemplate } from './emailService.js';
 
 const MINUTE = 60 * 1000;
 
@@ -65,7 +65,7 @@ async function deliverReminderInApp({ userId, title, body, type, data }) {
 }
 
 async function flushReminderDigests(digestByUser) {
-  const frontend = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  const frontend = getFrontendBaseUrl();
 
   for (const entry of digestByUser.values()) {
     if (!entry.email || !entry.items.length) continue;
@@ -79,10 +79,11 @@ async function flushReminderDigests(digestByUser) {
     );
     const listHtml = entry.items
       .map((item) => {
-        const link = item.href
-          ? `<br/><a href="${escapeHtml(frontend + item.href)}" style="color:#2563eb;">Open</a>`
+        const absolute = item.href ? `${frontend}${item.href}` : '';
+        const link = absolute
+          ? `<br/><a href="${escapeHtml(absolute)}" style="color:#0f3d5e;font-weight:700;text-decoration:underline;">Open reminder</a>`
           : '';
-        return `<li style="margin:0 0 10px 0;"><strong>${escapeHtml(item.title)}</strong><br/>${escapeHtml(item.body)}${link}</li>`;
+        return `<li style="margin:0 0 14px;"><strong>${escapeHtml(item.title)}</strong><br/>${escapeHtml(item.body)}${link}</li>`;
       })
       .join('');
 
@@ -90,11 +91,16 @@ async function flushReminderDigests(digestByUser) {
       to: entry.email,
       subject,
       text: ['Your Trippo reminders:', '', ...textLines].join('\n'),
-      html: `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#111;">
-        <p style="margin:0 0 16px 0;">Here are your reminders:</p>
-        <ul style="margin:0;padding-left:18px;">${listHtml}</ul>
-        <p style="margin:20px 0 0 0;font-size:14px;color:#555;">— Trippo</p>
-      </div>`,
+      html: renderEmailTemplate({
+        eyebrow: 'REMINDERS',
+        title: count === 1 ? 'Your reminder' : 'Your reminders',
+        greeting: 'Hello,',
+        paragraphs: [
+          count === 1 ? 'Here is your reminder:' : `Here are your ${count} reminders:`,
+          `<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;color:#243044;">${listHtml}</ul>`,
+        ],
+        closing: 'Stay on track,',
+      }),
       fromName: 'Trippo reminders',
     });
   }

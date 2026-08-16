@@ -19,6 +19,17 @@ if (result.error) {
   console.log('✅ Email service: .env file loaded from:', envPath);
 }
 
+/** Production app origin for email deep links. Never fall back to localhost. */
+const DEFAULT_FRONTEND_URL = 'https://bookfy.trippo.rw';
+
+export function getFrontendBaseUrl() {
+  const configured = String(process.env.FRONTEND_URL || '').trim().replace(/\/$/, '');
+  if (configured && !/localhost|127\.0\.0\.1/i.test(configured)) {
+    return configured;
+  }
+  return DEFAULT_FRONTEND_URL;
+}
+
 // Check SMTP configuration on module load
 const checkSmtpConfig = () => {
   const hasUser = !!process.env.SMTP_USER;
@@ -84,37 +95,43 @@ function displayCompanyName(senderUser) {
   return senderUser?.businessName || senderUser?.name || '';
 }
 
-/** Plain sender line — no logo, no colored header blocks. */
-export const generateEmailHeader = (senderUser) => {
-  const companyName = displayCompanyName(senderUser);
-  const senderName = senderUser?.name || '';
-  const senderEmail = senderUser?.email || '';
-  const fromLine = [companyName || senderName, senderEmail].filter(Boolean).join(' · ');
-  if (!fromLine) return '';
-  return `<p style="margin:0 0 20px 0;font-size:13px;line-height:1.5;color:#333;">From: ${escapeHtml(fromLine)}</p>`;
-};
-
 const emailSignature = (senderUser) => {
   const companyName = displayCompanyName(senderUser);
-  if (!companyName) return '';
-  return `<p style="margin:0;font-size:15px;line-height:1.5;color:#111;">${escapeHtml(companyName)}</p>`;
+  return escapeHtml(companyName || 'Trippo');
 };
 
-/** Clear message email — white background, no colored boxes, no logo. */
-function plainEmailHtml({ greeting, paragraphs = [], closing, senderUser }) {
+/**
+ * Shared, email-client-safe layout for every Trippo email.
+ * Uses solid colors and borders only; no gradients or shadows.
+ */
+export function renderEmailTemplate({
+  eyebrow = 'TRIPPO',
+  title,
+  greeting,
+  paragraphs = [],
+  actionUrl,
+  actionText,
+  closing,
+  senderUser,
+  footerNote,
+}) {
   const body = paragraphs
     .filter(Boolean)
     .map(
       (p) =>
-        `<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#111;">${p}</p>`,
+        `<p style="margin:0 0 16px 0;font-size:15px;line-height:1.65;color:#243044;">${p}</p>`,
     )
     .join('');
 
-  const signature = emailSignature(senderUser);
-  const footer =
-    closing || signature
-      ? `<p style="margin:24px 0 4px 0;font-size:14px;line-height:1.5;color:#111;">${closing || 'Best regards,'}</p>${signature}`
-      : '';
+  const signature = closing
+    ? `<p style="margin:26px 0 0;font-size:15px;line-height:1.6;color:#243044;">${escapeHtml(closing)}<br><strong>${emailSignature(senderUser)}</strong></p>`
+    : '';
+  const action = actionUrl && actionText
+    ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:24px 0 4px;"><tr><td style="border-radius:6px;background:#0f3d5e;"><a href="${escapeHtml(actionUrl)}" style="display:inline-block;padding:12px 20px;font-family:Arial,sans-serif;font-size:14px;font-weight:700;line-height:20px;color:#ffffff;text-decoration:none;">${escapeHtml(actionText)}</a></td></tr></table>`
+    : '';
+  const note = footerNote
+    ? `<p style="margin:20px 0 0;font-size:12px;line-height:1.55;color:#667085;">${footerNote}</p>`
+    : '';
 
   return `<!DOCTYPE html>
 <html>
@@ -122,15 +139,33 @@ function plainEmailHtml({ greeting, paragraphs = [], closing, senderUser }) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
-  <div style="max-width:560px;margin:0 auto;padding:28px 20px;color:#111;">
-    ${generateEmailHeader(senderUser)}
-    ${greeting ? `<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#111;">${greeting}</p>` : ''}
-    ${body}
-    ${footer}
-  </div>
+<body style="margin:0;padding:0;background:#f3f6f8;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f6f8;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;background:#ffffff;border:1px solid #d9e1e8;border-radius:8px;overflow:hidden;">
+        <tr><td style="padding:22px 32px;background:#0f3d5e;border-bottom:4px solid #20a39e;">
+          <p style="margin:0;font-size:12px;font-weight:700;letter-spacing:1.4px;line-height:1.4;color:#d8f1ef;">${escapeHtml(eyebrow)}</p>
+          <p style="margin:6px 0 0;font-size:22px;font-weight:700;line-height:1.25;color:#ffffff;">${escapeHtml(title || 'An update from Trippo')}</p>
+        </td></tr>
+        <tr><td style="padding:30px 32px 28px;">
+          ${greeting ? `<p style="margin:0 0 18px;font-size:15px;line-height:1.65;color:#243044;">${greeting}</p>` : ''}
+          ${body}
+          ${action}
+          ${signature}
+          ${note}
+        </td></tr>
+        <tr><td style="padding:18px 32px;border-top:1px solid #e5eaf0;background:#fafcfd;">
+          <p style="margin:0;font-size:12px;line-height:1.5;color:#667085;">Sent by Trippo · Manage your work with clarity</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
 </body>
 </html>`;
+}
+
+function plainEmailHtml({ title, greeting, paragraphs = [], closing, senderUser }) {
+  return renderEmailTemplate({ title, greeting, paragraphs, closing, senderUser });
 }
 
 function formatDueDate(dateValue) {
@@ -209,6 +244,7 @@ export const sendUserScheduleNotification = async (user, schedule, senderUser) =
     subject: `Reminder: ${schedule.title}`,
     text: textParts.join('\n'),
     html: plainEmailHtml({
+      title: 'Schedule reminder',
       greeting: `Hello ${escapeHtml(user.name)},`,
       paragraphs,
       closing: 'Best regards,',
@@ -253,6 +289,7 @@ export const sendClientScheduleNotification = async (client, schedule, senderUse
     subject: `Reminder: ${schedule.title}`,
     text: textParts.join('\n'),
     html: plainEmailHtml({
+      title: 'Schedule reminder',
       greeting: `Hello ${escapeHtml(client.name)},`,
       paragraphs,
       closing: 'Thank you,',
@@ -296,6 +333,7 @@ export const sendUserScheduleDigest = async (user, schedules, senderUser) => {
     subject,
     text: textParts.join('\n'),
     html: plainEmailHtml({
+      title: 'Your schedule reminders',
       greeting: `Hello ${escapeHtml(user.name)},`,
       paragraphs: [
         `You have ${count} schedule reminders:`,
@@ -345,6 +383,7 @@ export const sendClientScheduleDigest = async (client, schedules, senderUser) =>
     subject,
     text: textParts.join('\n'),
     html: plainEmailHtml({
+      title: 'Your reminders',
       greeting: `Hello ${escapeHtml(client.name)},`,
       paragraphs: [`You have ${count} reminders:`, ...paragraphs],
       closing: 'Thank you,',
@@ -384,6 +423,7 @@ export const sendMonthlyPaymentReminder = async (user, plan, senderUser) => {
     subject,
     text: message,
     html: plainEmailHtml({
+      title: 'Subscription payment reminder',
       greeting: `Hello ${escapeHtml(user.name)},`,
       paragraphs,
       closing: 'Best regards,',
@@ -428,6 +468,7 @@ export const sendRecurringExpenseReminder = async (user, recurringExpense, conte
     subject,
     text: message,
     html: plainEmailHtml({
+      title: isDueToday ? 'Expense payment due' : 'Upcoming expense',
       greeting: `Hello ${escapeHtml(user.name)},`,
       paragraphs,
       closing: 'Best regards,',
@@ -471,6 +512,7 @@ export const sendRecurringExpenseDigest = async (user, items) => {
     subject,
     text,
     html: plainEmailHtml({
+      title: 'Your expense reminders',
       greeting: `Hello ${escapeHtml(user.name)},`,
       paragraphs: [`You have ${items.length} expense reminders:`, ...paragraphs],
       closing: 'Best regards,',
@@ -501,6 +543,7 @@ export const sendCompletionNotification = async (schedule, senderUser, completio
       subject: `Schedule Completed: ${schedule.title}`,
       text: message,
       html: plainEmailHtml({
+        title: 'Schedule completed',
         greeting: `Hello ${escapeHtml(senderUser.name)},`,
         paragraphs: detailParagraphs,
         closing: 'Best regards,',
@@ -517,6 +560,7 @@ export const sendCompletionNotification = async (schedule, senderUser, completio
       subject: `Schedule Completed: ${schedule.title}`,
       text: message,
       html: plainEmailHtml({
+        title: 'Schedule completed',
         greeting: `Hello ${escapeHtml(schedule.clientId.name)},`,
         paragraphs: detailParagraphs,
         closing: 'Thank you,',

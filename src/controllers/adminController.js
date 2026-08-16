@@ -5,47 +5,30 @@ import Sale from '../models/Sale.js';
 import Schedule from '../models/Schedule.js';
 import Client from '../models/Client.js';
 import ServerStatus from '../models/ServerStatus.js';
-import { sendEmail } from '../utils/emailService.js';
+import { sendEmail, renderEmailTemplate } from '../utils/emailService.js';
 import mongoose from 'mongoose';
 import Notification from '../models/Notification.js';
 import SubscriptionPayment from '../models/SubscriptionPayment.js';
 import { applySuccessfulPayment, serializePaymentPlan } from '../utils/paymentPlanUtils.js';
 
-// Helper function to generate email header as table rows for admin emails
-const generateEmailHeaderTable = (senderUser) => {
-  const companyName = senderUser?.businessName || senderUser?.name || 'Profit Pilot';
-  const companyLogo = process.env.COMPANY_LOGO_URL || 'https://trippo.rw/logo.png';
-  const senderName = senderUser?.name || 'Admin';
-  const senderEmail = senderUser?.email || '';
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
-  return `
-    <tr>
-      <td style="background-color: #ffffff; padding: 15px 20px; text-align: left; border-bottom: 1px solid #e2e8f0;">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <img 
-            src="${companyLogo}" 
-            alt="Logo" 
-            width="40" 
-            height="40"
-            style="width: 40px; height: 40px; display: block; border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; vertical-align: middle;" 
-          />
-          <h1 style="color: #1e293b; margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.3px; line-height: 40px; vertical-align: middle;">${companyName}</h1>
-        </div>
-      </td>
-    </tr>
-    <tr>
-      <td style="background-color: #f8fafc; padding: 12px 20px; border-bottom: 1px solid #e2e8f0;">
-        <div style="background-color: #ffffff; padding: 10px 12px;">
-          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-            <span style="color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Message From:</span>
-            <span style="color: #1e293b; font-size: 13px; font-weight: 600;">${senderName}</span>
-            ${senderEmail ? `<span style="color: #64748b; font-size: 12px; margin-left: 4px;">${senderEmail}</span>` : ''}
-          </div>
-        </div>
-      </td>
-    </tr>
-  `;
-};
+function buildAdminEmailHtml({ subject, user, message, senderUser }) {
+  return renderEmailTemplate({
+    eyebrow: 'TRIPPO UPDATE',
+    title: subject,
+    greeting: `Hello ${escapeHtml(user.name)},`,
+    paragraphs: [escapeHtml(message).replace(/\n/g, '<br>')],
+    closing: 'Best regards,',
+    senderUser: senderUser || { businessName: 'Trippo' },
+  });
+}
 
 // Get system statistics
 export const getSystemStats = async (req, res) => {
@@ -977,40 +960,13 @@ export const sendEmailToUser = async (req, res) => {
       personalizedMessage = personalizedMessage.replace(/{name}/g, user.name);
     }
 
-    // Generate HTML if not provided
-    const emailHtml = html || `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-          <tr>
-            <td style="padding: 40px 20px;">
-              <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                ${generateEmailHeaderTable(adminUser || user)}
-                <tr>
-                  <td style="padding: 30px;">
-                    <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">${subject}</h2>
-                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
-                    <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; margin: 20px 0;">
-                      <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap;">${personalizedMessage}</p>
-                    </div>
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                      <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                      <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">${adminUser?.businessName || adminUser?.name || 'Profit Pilot Admin'}</p>
-                    </div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `;
+    // Use the shared Trippo template unless an administrator explicitly supplies HTML.
+    const emailHtml = html || buildAdminEmailHtml({
+      subject,
+      user,
+      message: personalizedMessage,
+      senderUser: adminUser || user,
+    });
 
     // Send email
     const result = await sendEmail({
@@ -1096,40 +1052,13 @@ export const sendBulkEmail = async (req, res) => {
           personalizedMessage = personalizedMessage.replace(/{name}/g, user.name);
         }
 
-        // Generate personalized HTML if not provided
-        const emailHtml = html || `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          </head>
-          <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f1f5f9;">
-            <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f1f5f9;">
-              <tr>
-                <td style="padding: 40px 20px;">
-                  <table role="presentation" style="width: 100%; max-width: 600px; margin: 0 auto; background-color: #ffffff; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                    ${generateEmailHeaderTable(adminUser)}
-                    <tr>
-                      <td style="padding: 30px;">
-                        <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 22px; font-weight: 600;">${subject}</h2>
-                        <p style="color: #475569; margin: 0 0 20px 0; font-size: 16px; line-height: 1.6;">Hello ${user.name},</p>
-                        <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; margin: 20px 0;">
-                          <p style="color: #1e293b; margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap;">${personalizedMessage}</p>
-                        </div>
-                        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0;">
-                          <p style="color: #64748b; margin: 0 0 5px 0; font-size: 14px;">Best regards,</p>
-                          <p style="color: #1e293b; margin: 0; font-size: 15px; font-weight: 600;">${adminUser?.businessName || adminUser?.name || 'Profit Pilot Admin'}</p>
-                        </div>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-              </tr>
-            </table>
-          </body>
-          </html>
-        `;
+        // Use the shared Trippo template unless an administrator explicitly supplies HTML.
+        const emailHtml = html || buildAdminEmailHtml({
+          subject,
+          user,
+          message: personalizedMessage,
+          senderUser: adminUser,
+        });
 
         const result = await sendEmail({
           to: user.email,
@@ -1450,18 +1379,18 @@ export const testEmail = async (req, res) => {
     // Send test email
     const result = await sendEmail({
       to,
-      subject: 'Test Email from Profit Pilot',
-      text: 'This is a test email from Profit Pilot. If you receive this, your email configuration is working correctly!',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #333;">Test Email from Profit Pilot</h2>
-          <p>This is a test email from Profit Pilot.</p>
-          <p>If you receive this, your email configuration is working correctly!</p>
-          <p style="margin-top: 30px; color: #666; font-size: 12px;">
-            This email was sent at ${new Date().toLocaleString()}
-          </p>
-        </div>
-      `,
+      subject: 'Test email from Trippo',
+      text: 'This is a test email from Trippo. Your email configuration is working correctly.',
+      html: renderEmailTemplate({
+        eyebrow: 'SYSTEM CHECK',
+        title: 'Email delivery is working',
+        greeting: 'Hello,',
+        paragraphs: [
+          'This is a test email from Trippo. Your email configuration is working correctly.',
+          `<span style="font-size:13px;color:#667085;">Sent ${escapeHtml(new Date().toLocaleString())}</span>`,
+        ],
+        closing: 'Regards,',
+      }),
     });
 
     if (result.success) {
