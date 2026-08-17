@@ -53,7 +53,7 @@ function formatApprovalItem(entityType, record) {
   return base;
 }
 
-function formatTeamReportApprovalItem(record) {
+function formatTeamReportApprovalItem(record, userId) {
   const plain = record.toObject ? record.toObject() : record;
   const approvalStatus =
     plain.status === 'submitted'
@@ -61,6 +61,9 @@ function formatTeamReportApprovalItem(record) {
       : plain.status === 'reviewed'
         ? 'approved'
         : plain.status;
+  const canApprove = (plain.reportTo || []).some(
+    (recipient) => recipient?.userId && String(recipient.userId) === String(userId),
+  );
   return {
     entityType: 'team_report',
     id: String(plain._id),
@@ -74,7 +77,7 @@ function formatTeamReportApprovalItem(record) {
     rejectionNote: plain.reviewNote,
     reportType: plain.reportType,
     reportTo: (plain.reportTo || []).map((recipient) => recipient.name).filter(Boolean),
-    canApprove: true,
+    canApprove,
   };
 }
 
@@ -115,9 +118,8 @@ export const getApprovalQueue = async (req, res) => {
           ? 'reviewed'
           : status;
     const reportQuery = buildListQuery(req, {});
-    if (!isAdminApprover) {
-      reportQuery['reportTo.userId'] = req.user._id;
-    }
+    // Team reports only appear for people listed under "Reporting to".
+    reportQuery['reportTo.userId'] = req.user._id;
     if (status && status !== 'all') {
       reportQuery.status = reportStatus;
     }
@@ -133,7 +135,7 @@ export const getApprovalQueue = async (req, res) => {
       ...expenses.map((r) => formatApprovalItem('expense', r)),
       ...bills.map((r) => formatApprovalItem('bill', r)),
       ...payrolls.map((r) => formatApprovalItem('payroll', r)),
-      ...teamReports.map(formatTeamReportApprovalItem),
+      ...teamReports.map((r) => formatTeamReportApprovalItem(r, req.user._id)),
     ].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
 
     res.json({ data: items });
@@ -147,19 +149,27 @@ export const getApprovalSummary = async (req, res) => {
   try {
     assertPageAccess(req, 'approvals');
     const query = buildListQuery(req, { approvalStatus: 'pending_approval' });
+    const isAdminApprover = Boolean(req.dataScope?.role === 'owner' || req.dataScope?.role === 'admin');
+    const financeQuery = isAdminApprover ? query : { ...query, _id: { $in: [] } };
+    const teamReportQuery = buildListQuery(req, {
+      status: 'submitted',
+      'reportTo.userId': req.user._id,
+    });
 
-    const [expenseCount, billCount, payrollCount] = await Promise.all([
-      Expense.countDocuments(query),
-      Bill.countDocuments(query),
-      Payroll.countDocuments(query),
+    const [expenseCount, billCount, payrollCount, teamReportCount] = await Promise.all([
+      Expense.countDocuments(financeQuery),
+      Bill.countDocuments(financeQuery),
+      Payroll.countDocuments(financeQuery),
+      TeamReport.countDocuments(teamReportQuery),
     ]);
 
     res.json({
       data: {
-        pendingCount: expenseCount + billCount + payrollCount,
+        pendingCount: expenseCount + billCount + payrollCount + teamReportCount,
         expenseCount,
         billCount,
         payrollCount,
+        teamReportCount,
       },
     });
   } catch (error) {

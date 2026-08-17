@@ -13,6 +13,10 @@ import {
   isAllowedDisappearingDuration,
   resolveExpiresAt,
 } from '../utils/disappearingMessages.js';
+import {
+  assertChatBodyLength,
+  formatChatValidationError,
+} from '../utils/chatMessageLimits.js';
 
 export const WORKSPACE_DM_MESSAGE_EVENT = 'workspace-dm:message';
 export const WORKSPACE_DM_READ_EVENT = 'workspace-dm:read';
@@ -352,6 +356,7 @@ function serializeDirectMessage(message, conversationId, workspaceId) {
     conversationId: String(conversationId),
     workspaceId: String(workspaceId),
     senderUserId: String(message.senderUserId),
+    clientMessageId: message.clientMessageId ? String(message.clientMessageId) : undefined,
     replyTo,
     poll: serializePoll(message.poll),
     reactions: serializeReactions(message.reactions),
@@ -651,7 +656,7 @@ export const getDirectChatMessages = async (req, res) => {
 export const sendDirectChatMessage = async (req, res) => {
   try {
     const { workspaceId, conversationId } = req.params;
-    const { body, attachments: rawAttachments, replyToMessageId, replyTo: clientReplyTo, poll: rawPoll } =
+    const { body, attachments: rawAttachments, replyToMessageId, replyTo: clientReplyTo, poll: rawPoll, clientMessageId } =
       req.body || {};
     const userId = req.user._id;
 
@@ -669,6 +674,7 @@ export const sendDirectChatMessage = async (req, res) => {
     if (!trimmedBody && !attachments.length && !poll) {
       return res.status(400).json({ error: 'Message, attachment, or poll is required' });
     }
+    assertChatBodyLength(trimmedBody);
 
     const user = await User.findById(userId).select('name profilePictureUrl');
     if (!user) {
@@ -690,6 +696,7 @@ export const sendDirectChatMessage = async (req, res) => {
     }
 
     const expiresAt = resolveExpiresAt(conversation.disappearingDurationSec);
+    const cleanClientMessageId = String(clientMessageId || '').trim().slice(0, 80) || undefined;
     const createData = attachReplyToCreateData(
       {
         conversationId,
@@ -698,6 +705,7 @@ export const sendDirectChatMessage = async (req, res) => {
         senderName: user.name || 'User',
         senderProfilePictureUrl: user.profilePictureUrl || null,
         body: trimmedBody,
+        ...(cleanClientMessageId ? { clientMessageId: cleanClientMessageId } : {}),
         attachments,
         ...(poll ? { poll } : {}),
         readBy: [],
@@ -771,7 +779,8 @@ export const sendDirectChatMessage = async (req, res) => {
   } catch (error) {
     console.error('Send direct chat message error:', error);
     if (error.name === 'ValidationError') {
-      return res.status(400).json({ error: error.message });
+      const bodyLength = String(req.body?.body || '').trim().length;
+      return res.status(400).json({ error: formatChatValidationError(error, bodyLength) });
     }
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to send message' });
   }
@@ -941,6 +950,7 @@ export const editDirectChatMessage = async (req, res) => {
     if (!trimmedBody) {
       return res.status(400).json({ error: 'Message body is required' });
     }
+    assertChatBodyLength(trimmedBody);
 
     await assertWorkspaceMember(workspaceId, userId);
     const conversation = await assertConversationAccess(conversationId, workspaceId, userId);
@@ -975,6 +985,10 @@ export const editDirectChatMessage = async (req, res) => {
     res.json({ data: message });
   } catch (error) {
     console.error('Edit direct chat message error:', error);
+    if (error.name === 'ValidationError') {
+      const bodyLength = String(req.body?.body || '').trim().length;
+      return res.status(400).json({ error: formatChatValidationError(error, bodyLength) });
+    }
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to edit message' });
   }
 };

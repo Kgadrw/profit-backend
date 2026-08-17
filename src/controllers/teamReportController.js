@@ -33,8 +33,9 @@ function isAssignedReviewer(report, userId) {
   );
 }
 
+/** Review actions are only for people listed under "Reporting to". */
 function canReviewReport(req, report) {
-  return canReviewReports(req) || isAssignedReviewer(report, req.user?._id);
+  return isAssignedReviewer(report, req.user?._id);
 }
 
 function buildReportListQuery(req, extra = {}) {
@@ -160,7 +161,9 @@ export const getTeamReports = async (req, res) => {
         ...formatTeamReport(report),
         canReview: canReviewReport(req, report),
       })),
-      meta: { canReview: canReviewReports(req) },
+      meta: {
+        canReview: reports.some((report) => canReviewReport(req, report)),
+      },
     });
   } catch (error) {
     console.error('Error fetching team reports:', error);
@@ -191,7 +194,15 @@ export const getTeamReportSummary = async (req, res) => {
         submittedCount,
         mySubmittedCount,
         myChangesCount,
-        canReview: canReviewReports(req),
+        canReview: Boolean(
+          userId &&
+            (await TeamReport.exists(
+              buildListQuery(req, {
+                status: 'submitted',
+                'reportTo.userId': userId,
+              }),
+            )),
+        ),
       },
     });
   } catch (error) {
@@ -295,13 +306,11 @@ export const updateTeamReport = async (req, res) => {
     if (!isOwner) {
       return res.status(403).json({ error: 'Only the submitter can edit this report' });
     }
+    if (report.status === 'reviewed') {
+      return res.status(400).json({ error: 'Reviewed reports cannot be edited' });
+    }
     if (!['changes_requested', 'rejected', 'submitted'].includes(report.status)) {
       return res.status(400).json({ error: 'This report cannot be edited' });
-    }
-    if (report.status === 'submitted') {
-      return res.status(400).json({
-        error: 'Submitted reports cannot be edited until a reviewer requests changes.',
-      });
     }
 
     const {
@@ -371,7 +380,7 @@ export const reviewTeamReport = async (req, res) => {
     assertPageAccess(req, 'reports');
     const report = await findTeamReport(req, req.params.id);
     if (!canReviewReport(req, report)) {
-      return res.status(403).json({ error: 'Only assigned recipients or workspace admins can review reports' });
+      return res.status(403).json({ error: 'Only people this report was sent to can review it' });
     }
     if (report.status !== 'submitted') {
       return res.status(400).json({ error: 'Only submitted reports can be marked as reviewed' });
@@ -405,7 +414,7 @@ export const rejectTeamReport = async (req, res) => {
     assertPageAccess(req, 'reports');
     const report = await findTeamReport(req, req.params.id);
     if (!canReviewReport(req, report)) {
-      return res.status(403).json({ error: 'Only assigned recipients or workspace admins can reject reports' });
+      return res.status(403).json({ error: 'Only people this report was sent to can reject it' });
     }
     if (report.status !== 'submitted') {
       return res.status(400).json({ error: 'Only submitted reports can be rejected' });
@@ -439,7 +448,7 @@ export const requestTeamReportChanges = async (req, res) => {
     assertPageAccess(req, 'reports');
     const report = await findTeamReport(req, req.params.id);
     if (!canReviewReport(req, report)) {
-      return res.status(403).json({ error: 'Only assigned recipients or workspace admins can request changes' });
+      return res.status(403).json({ error: 'Only people this report was sent to can request changes' });
     }
     if (report.status !== 'submitted') {
       return res.status(400).json({ error: 'Only submitted reports can receive change requests' });
@@ -522,13 +531,12 @@ export const deleteTeamReport = async (req, res) => {
     const report = await findTeamReport(req, req.params.id);
     const userId = String(req.user._id);
     const isOwner = String(report.submitterUserId) === userId;
-    const isReviewer = canReviewReports(req);
 
-    if (!isOwner && !isReviewer) {
-      return res.status(403).json({ error: 'Not allowed to delete this report' });
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only the submitter can delete this report' });
     }
-    if (isOwner && !isReviewer && !['changes_requested', 'rejected', 'submitted'].includes(report.status)) {
-      return res.status(400).json({ error: 'Reviewed reports cannot be deleted by the submitter' });
+    if (report.status === 'reviewed') {
+      return res.status(400).json({ error: 'Reviewed reports cannot be deleted' });
     }
 
     await TeamReport.deleteOne({ _id: report._id });

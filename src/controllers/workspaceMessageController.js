@@ -10,6 +10,10 @@ import { saveStoredFile } from '../utils/storedFileService.js';
 import {
   isAllowedDisappearingDuration,
 } from '../utils/disappearingMessages.js';
+import {
+  assertChatBodyLength,
+  formatChatValidationError,
+} from '../utils/chatMessageLimits.js';
 
 /** Synthetic conversation scope for group-chat file storage (must be a valid ObjectId). */
 const GROUP_ATTACHMENT_SCOPE = (workspaceId) => String(workspaceId);
@@ -179,6 +183,7 @@ function serializeWorkspaceMessage(message) {
     _id: String(message._id),
     workspaceId: String(message.workspaceId),
     senderUserId: String(message.senderUserId),
+    clientMessageId: message.clientMessageId ? String(message.clientMessageId) : undefined,
     replyTo,
     poll: serializePoll(message.poll),
     reactions: serializeReactions(message.reactions),
@@ -318,7 +323,7 @@ export const getWorkspaceMessages = async (req, res) => {
 export const sendWorkspaceMessage = async (req, res) => {
   try {
     const { workspaceId } = req.params;
-    const { body, replyToMessageId, replyTo: clientReplyTo, attachments: rawAttachments, poll: rawPoll } =
+    const { body, replyToMessageId, replyTo: clientReplyTo, attachments: rawAttachments, poll: rawPoll, clientMessageId } =
       req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(workspaceId)) {
@@ -334,6 +339,7 @@ export const sendWorkspaceMessage = async (req, res) => {
     if (!trimmedBody && !attachments.length && !poll) {
       return res.status(400).json({ error: 'Message, attachment, or poll is required' });
     }
+    assertChatBodyLength(trimmedBody);
 
     const user = await User.findById(req.user._id).select('name profilePictureUrl');
     if (!user) {
@@ -361,6 +367,7 @@ export const sendWorkspaceMessage = async (req, res) => {
       .lean();
     // Disappearing messages are DM-only (not workspace group chat).
     const expiresAt = null;
+    const cleanClientMessageId = String(clientMessageId || '').trim().slice(0, 80) || undefined;
 
     const createData = {
       workspaceId,
@@ -368,6 +375,7 @@ export const sendWorkspaceMessage = async (req, res) => {
       senderName: user.name || 'User',
       senderProfilePictureUrl: user.profilePictureUrl || null,
       body: trimmedBody,
+      ...(cleanClientMessageId ? { clientMessageId: cleanClientMessageId } : {}),
       attachments,
       ...(poll ? { poll } : {}),
       mentionAll,
@@ -423,7 +431,8 @@ export const sendWorkspaceMessage = async (req, res) => {
   } catch (error) {
     console.error('Send workspace message error:', error);
     if (error.name === 'ValidationError') {
-      return res.status(400).json({ error: error.message });
+      const bodyLength = String(req.body?.body || '').trim().length;
+      return res.status(400).json({ error: formatChatValidationError(error, bodyLength) });
     }
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to send message' });
   }
@@ -584,6 +593,7 @@ export const editWorkspaceMessage = async (req, res) => {
     if (!trimmedBody) {
       return res.status(400).json({ error: 'Message is required' });
     }
+    assertChatBodyLength(trimmedBody);
 
     await assertWorkspaceMember(workspaceId, userId);
 
@@ -613,6 +623,10 @@ export const editWorkspaceMessage = async (req, res) => {
     res.json({ data: message });
   } catch (error) {
     console.error('Edit workspace message error:', error);
+    if (error.name === 'ValidationError') {
+      const bodyLength = String(req.body?.body || '').trim().length;
+      return res.status(400).json({ error: formatChatValidationError(error, bodyLength) });
+    }
     res.status(error.statusCode || 500).json({ error: error.message || 'Failed to edit message' });
   }
 };

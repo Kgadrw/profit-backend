@@ -88,6 +88,12 @@ const workspaceMessageSchema = new mongoose.Schema(
       maxlength: 4000,
       default: '',
     },
+    clientMessageId: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: undefined,
+    },
     attachments: [
       {
         url: { type: String, required: true, trim: true },

@@ -94,6 +94,12 @@ const workspaceDirectMessageSchema = new mongoose.Schema(
       maxlength: 4000,
       default: '',
     },
+    clientMessageId: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: undefined,
+    },
     replyTo: {
       type: replyToSchema,
       default: undefined,
