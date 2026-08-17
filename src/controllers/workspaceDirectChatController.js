@@ -26,11 +26,31 @@ export const WORKSPACE_DM_SETTINGS_EVENT = 'workspace-dm:settings';
 export const WORKSPACE_DM_REACTION_EVENT = 'workspace-dm:reaction';
 
 async function assertWorkspaceMember(workspaceId, userId) {
-  const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
+  const membership = await WorkspaceMember.findOne({ workspaceId, userId })
+    .select('_id createdAt')
+    .lean();
   if (!membership) {
     const error = new Error('Not a member of this workspace');
     error.statusCode = 403;
     throw error;
+  }
+  return membership;
+}
+
+/** Members only see chat from the moment they joined (no prior history). */
+function applyMembershipVisibleFrom(query, membership, before) {
+  const createdAt = {};
+  if (membership?.createdAt) {
+    createdAt.$gte = new Date(membership.createdAt);
+  }
+  if (before) {
+    const beforeDate = new Date(before);
+    if (!Number.isNaN(beforeDate.getTime())) {
+      createdAt.$lt = beforeDate;
+    }
+  }
+  if (Object.keys(createdAt).length) {
+    query.createdAt = createdAt;
   }
 }
 
@@ -153,17 +173,22 @@ async function broadcastToConversation(conversation, event, payload) {
   );
 }
 
-async function countUnreadForConversation(conversationId, userId) {
-  return WorkspaceDirectMessage.countDocuments({
+async function countUnreadForConversation(conversationId, userId, visibleFrom = null) {
+  const query = {
     conversationId,
     senderUserId: { $ne: userId },
     'readBy.userId': { $ne: userId },
     $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-  });
+  };
+  if (visibleFrom) {
+    query.createdAt = { $gte: new Date(visibleFrom) };
+  }
+  return WorkspaceDirectMessage.countDocuments(query);
 }
 
 async function buildDirectChatThreadsForWorkspace(workspaceId, userId, workspaceMeta = {}) {
-  const [peers, conversations] = await Promise.all([
+  const [membership, peers, conversations] = await Promise.all([
+    WorkspaceMember.findOne({ workspaceId, userId }).select('createdAt').lean(),
     getWorkspacePeers(workspaceId, userId),
     WorkspaceDirectConversation.find({
       workspaceId,
@@ -172,6 +197,7 @@ async function buildDirectChatThreadsForWorkspace(workspaceId, userId, workspace
       .sort({ lastMessageAt: -1, updatedAt: -1 })
       .lean(),
   ]);
+  const visibleFrom = membership?.createdAt ? new Date(membership.createdAt) : null;
 
   const conversationByPeerId = new Map();
   for (const conversation of conversations) {
@@ -185,19 +211,34 @@ async function buildDirectChatThreadsForWorkspace(workspaceId, userId, workspace
     peers.map(async (peer) => {
       const conversation = conversationByPeerId.get(peer.userId);
       const unreadCount = conversation
-        ? await countUnreadForConversation(conversation._id, userId)
+        ? await countUnreadForConversation(conversation._id, userId, visibleFrom)
         : 0;
+
+      let lastMessageAt = conversation?.lastMessageAt || null;
+      let lastMessageBody = conversation?.lastMessageBody || null;
+      let lastSenderUserId = conversation?.lastSenderUserId
+        ? String(conversation.lastSenderUserId)
+        : null;
+
+      // Hide DM previews that happened before this membership period.
+      if (
+        visibleFrom &&
+        lastMessageAt &&
+        new Date(lastMessageAt).getTime() < visibleFrom.getTime()
+      ) {
+        lastMessageAt = null;
+        lastMessageBody = null;
+        lastSenderUserId = null;
+      }
 
       return {
         conversationId: conversation ? String(conversation._id) : null,
         workspaceId: String(workspaceMeta.workspaceId || workspaceId),
         workspaceName: workspaceMeta.workspaceName || 'Workspace',
         otherUser: peer,
-        lastMessageAt: conversation?.lastMessageAt || null,
-        lastMessageBody: conversation?.lastMessageBody || null,
-        lastSenderUserId: conversation?.lastSenderUserId
-          ? String(conversation.lastSenderUserId)
-          : null,
+        lastMessageAt,
+        lastMessageBody,
+        lastSenderUserId,
         unreadCount,
         disappearingDurationSec: Number(conversation?.disappearingDurationSec) || 0,
       };
@@ -615,7 +656,7 @@ export const getDirectChatMessages = async (req, res) => {
       return res.status(400).json({ error: 'Invalid workspace id' });
     }
 
-    await assertWorkspaceMember(workspaceId, userId);
+    const membership = await assertWorkspaceMember(workspaceId, userId);
     await assertConversationAccess(conversationId, workspaceId, userId);
 
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
@@ -630,12 +671,7 @@ export const getDirectChatMessages = async (req, res) => {
         { $or: [{ expiresAt: null }, { expiresAt: { $exists: false } }, { expiresAt: { $gt: now } }] },
       ],
     };
-    if (before) {
-      const beforeDate = new Date(before);
-      if (!Number.isNaN(beforeDate.getTime())) {
-        query.createdAt = { $lt: beforeDate };
-      }
-    }
+    applyMembershipVisibleFrom(query, membership, before);
 
     const messages = await WorkspaceDirectMessage.find(query)
       .sort({ createdAt: -1 })
@@ -1055,15 +1091,21 @@ export const getChatUnreadSummary = async (req, res) => {
       return res.status(400).json({ error: 'Invalid workspace id' });
     }
 
-    await assertWorkspaceMember(workspaceId, userId);
+    const membership = await assertWorkspaceMember(workspaceId, userId);
+    const visibleFrom = membership?.createdAt ? new Date(membership.createdAt) : null;
+
+    const groupUnreadQuery = {
+      workspaceId,
+      senderUserId: { $ne: userId },
+      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+      'readBy.userId': { $ne: userId },
+    };
+    if (visibleFrom) {
+      groupUnreadQuery.createdAt = { $gte: visibleFrom };
+    }
 
     const [groupUnread, conversations] = await Promise.all([
-      WorkspaceMessage.countDocuments({
-        workspaceId,
-        senderUserId: { $ne: userId },
-        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-        'readBy.userId': { $ne: userId },
-      }),
+      WorkspaceMessage.countDocuments(groupUnreadQuery),
       WorkspaceDirectConversation.find({
         workspaceId,
         participantIds: userId,
@@ -1075,7 +1117,7 @@ export const getChatUnreadSummary = async (req, res) => {
     let directUnread = 0;
     if (conversations.length) {
       const counts = await Promise.all(
-        conversations.map((row) => countUnreadForConversation(row._id, userId)),
+        conversations.map((row) => countUnreadForConversation(row._id, userId, visibleFrom)),
       );
       directUnread = counts.reduce((sum, value) => sum + value, 0);
     }
@@ -1097,7 +1139,9 @@ export const getChatUnreadSummary = async (req, res) => {
 export const getAllChatUnreadSummary = async (req, res) => {
   try {
     const userId = req.user._id;
-    const memberships = await WorkspaceMember.find({ userId }).select('workspaceId').lean();
+    const memberships = await WorkspaceMember.find({ userId })
+      .select('workspaceId createdAt')
+      .lean();
     if (!memberships.length) {
       return res.json({
         data: { groupUnread: 0, directUnread: 0, total: 0 },
@@ -1105,26 +1149,45 @@ export const getAllChatUnreadSummary = async (req, res) => {
     }
 
     const workspaceIds = memberships.map((row) => row.workspaceId);
+    const visibleFromByWorkspace = new Map(
+      memberships.map((row) => [String(row.workspaceId), row.createdAt ? new Date(row.createdAt) : null]),
+    );
 
-    const [groupUnread, conversations] = await Promise.all([
-      WorkspaceMessage.countDocuments({
-        workspaceId: { $in: workspaceIds },
-        senderUserId: { $ne: userId },
-        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-        'readBy.userId': { $ne: userId },
-      }),
+    const [groupUnreadCounts, conversations] = await Promise.all([
+      Promise.all(
+        memberships.map((membership) => {
+          const query = {
+            workspaceId: membership.workspaceId,
+            senderUserId: { $ne: userId },
+            $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+            'readBy.userId': { $ne: userId },
+          };
+          if (membership.createdAt) {
+            query.createdAt = { $gte: new Date(membership.createdAt) };
+          }
+          return WorkspaceMessage.countDocuments(query);
+        }),
+      ),
       WorkspaceDirectConversation.find({
         workspaceId: { $in: workspaceIds },
         participantIds: userId,
       })
-        .select('_id')
+        .select('_id workspaceId')
         .lean(),
     ]);
+
+    const groupUnread = groupUnreadCounts.reduce((sum, value) => sum + value, 0);
 
     let directUnread = 0;
     if (conversations.length) {
       const counts = await Promise.all(
-        conversations.map((row) => countUnreadForConversation(row._id, userId)),
+        conversations.map((row) =>
+          countUnreadForConversation(
+            row._id,
+            userId,
+            visibleFromByWorkspace.get(String(row.workspaceId)) || null,
+          ),
+        ),
       );
       directUnread = counts.reduce((sum, value) => sum + value, 0);
     }

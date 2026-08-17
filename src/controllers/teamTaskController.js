@@ -286,6 +286,22 @@ export const updateTeamTask = async (req, res) => {
       'milestoneId',
     ];
 
+    // Done tasks are locked: only status (reopen) or completion note may change.
+    if (prevStatus === 'done') {
+      const allowedWhileDone = new Set(['status', 'completionNote']);
+      const attempted = fields.filter((field) => req.body[field] !== undefined);
+      const disallowed = attempted.filter((field) => !allowedWhileDone.has(field));
+      if (disallowed.length > 0) {
+        return res.status(400).json({
+          error:
+            'Completed tasks cannot be edited. Move the task back to To do or In progress first.',
+        });
+      }
+      if (req.body.completionNote !== undefined && !statusChanging) {
+        await assertCurrentUserIsAssignee(req, task.assigneeId);
+      }
+    }
+
     for (const field of fields) {
       if (req.body[field] === undefined) continue;
       if (field === 'dueDate') {

@@ -54,8 +54,14 @@ function formatTeamReport(record) {
   return {
     ...plain,
     id: String(plain._id),
+    submitterUserId: plain.submitterUserId ? String(plain.submitterUserId) : undefined,
     blockers: plain.blockers || '',
     nextSteps: plain.nextSteps || '',
+    reportTo: (plain.reportTo || []).map((recipient) => ({
+      ...recipient,
+      memberId: recipient.memberId ? String(recipient.memberId) : recipient.memberId,
+      userId: recipient.userId ? String(recipient.userId) : recipient.userId,
+    })),
   };
 }
 

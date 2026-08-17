@@ -93,13 +93,32 @@ function normalizeReactionEmoji(rawEmoji) {
 }
 
 async function assertWorkspaceMember(workspaceId, userId) {
-  const membership = await WorkspaceMember.findOne({ workspaceId, userId }).select('_id').lean();
+  const membership = await WorkspaceMember.findOne({ workspaceId, userId })
+    .select('_id createdAt')
+    .lean();
   if (!membership) {
     const error = new Error('Not a member of this workspace');
     error.statusCode = 403;
     throw error;
   }
   return membership;
+}
+
+/** Members only see chat from the moment they joined (no prior history). */
+function applyMembershipVisibleFrom(query, membership, before) {
+  const createdAt = {};
+  if (membership?.createdAt) {
+    createdAt.$gte = new Date(membership.createdAt);
+  }
+  if (before) {
+    const beforeDate = new Date(before);
+    if (!Number.isNaN(beforeDate.getTime())) {
+      createdAt.$lt = beforeDate;
+    }
+  }
+  if (Object.keys(createdAt).length) {
+    query.createdAt = createdAt;
+  }
 }
 
 async function getWorkspaceMemberUsers(workspaceId) {
@@ -284,21 +303,15 @@ export const getWorkspaceMessages = async (req, res) => {
         { $or: [{ expiresAt: null }, { expiresAt: { $exists: false } }, { expiresAt: { $gt: now } }] },
       ],
     };
-    if (before) {
-      const beforeDate = new Date(before);
-      if (!Number.isNaN(beforeDate.getTime())) {
-        query.createdAt = { $lt: beforeDate };
-      }
-    }
 
-    const [, messages] = await Promise.all([
-      assertWorkspaceMember(workspaceId, userId),
-      WorkspaceMessage.find(query)
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .select('workspaceId senderUserId senderName senderProfilePictureUrl body attachments poll reactions replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt expiresAt createdAt')
-        .lean(),
-    ]);
+    const membership = await assertWorkspaceMember(workspaceId, userId);
+    applyMembershipVisibleFrom(query, membership, before);
+
+    const messages = await WorkspaceMessage.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select('workspaceId senderUserId senderName senderProfilePictureUrl body attachments poll reactions replyTo mentionAll mentions deliveredTo readBy editedAt deletedAt expiresAt createdAt')
+      .lean();
 
     const chronological = messages.reverse();
     const enriched = await enrichMessagesWithSenderProfiles(chronological);
