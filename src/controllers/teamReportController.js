@@ -541,9 +541,6 @@ export const deleteTeamReport = async (req, res) => {
     if (!isOwner) {
       return res.status(403).json({ error: 'Only the submitter can delete this report' });
     }
-    if (report.status === 'reviewed') {
-      return res.status(400).json({ error: 'Reviewed reports cannot be deleted' });
-    }
 
     await TeamReport.deleteOne({ _id: report._id });
     res.json({ data: { id: String(report._id) } });
