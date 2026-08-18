@@ -1,67 +1,87 @@
 // API Request Tracker Middleware
-// This middleware tracks all API requests for analytics
+// Ring buffer keeps CPU/memory bounded under high traffic.
 
-// In-memory storage for API request tracking
-// In production, you'd want to use Redis or a database
-const apiRequestLog = [];
-const MAX_LOG_SIZE = 10000; // Keep last 10k requests
+import { isOverloaded } from '../utils/loadManager.js';
 
-// Track API request
+const MAX_LOG_SIZE = 8000;
+const apiRequestLog = new Array(MAX_LOG_SIZE);
+let logHead = 0;
+let logSize = 0;
+
+function appendLog(entry) {
+  apiRequestLog[logHead] = entry;
+  logHead = (logHead + 1) % MAX_LOG_SIZE;
+  if (logSize < MAX_LOG_SIZE) logSize += 1;
+}
+
+function forEachLog(fn) {
+  const start = logSize < MAX_LOG_SIZE ? 0 : logHead;
+  for (let i = 0; i < logSize; i += 1) {
+    const item = apiRequestLog[(start + i) % MAX_LOG_SIZE];
+    if (item) fn(item);
+  }
+}
+
+function getRecentSlice(limit) {
+  const n = Math.min(limit, logSize);
+  const out = [];
+  for (let i = 1; i <= n; i += 1) {
+    const idx = (logHead - i + MAX_LOG_SIZE) % MAX_LOG_SIZE;
+    if (apiRequestLog[idx]) out.push(apiRequestLog[idx]);
+  }
+  return out;
+}
+
+function shouldSkipTracking(req) {
+  const path = req.path || '';
+  if (path === '/health' || path === '/') return true;
+  if (isOverloaded() && Math.random() > 0.25) return true;
+  return false;
+}
+
 export const trackApiRequest = (req, res, next) => {
+  if (shouldSkipTracking(req)) return next();
+
   const startTime = Date.now();
-  const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  
-  // Store request info
   const requestInfo = {
-    id: requestId,
+    id: `${startTime}-${Math.random().toString(36).slice(2, 9)}`,
     method: req.method,
     path: req.path,
     endpoint: `${req.method} ${req.path}`,
     timestamp: new Date(),
     userAgent: req.get('user-agent') || 'Unknown',
-    ip: req.ip || req.connection.remoteAddress || 'Unknown',
+    ip: req.ip || req.socket?.remoteAddress || 'Unknown',
     statusCode: null,
     responseTime: null,
   };
 
-  // Track response
   const originalSend = res.send;
-  res.send = function(data) {
-    const responseTime = Date.now() - startTime;
+  res.send = function trackedSend(data) {
     requestInfo.statusCode = res.statusCode;
-    requestInfo.responseTime = responseTime;
-    
-    // Add to log
-    apiRequestLog.push(requestInfo);
-    
-    // Keep log size manageable
-    if (apiRequestLog.length > MAX_LOG_SIZE) {
-      apiRequestLog.shift(); // Remove oldest
-    }
-    
+    requestInfo.responseTime = Date.now() - startTime;
+    appendLog(requestInfo);
     return originalSend.call(this, data);
   };
 
   next();
 };
 
-// Get API request statistics
 export const getApiRequestStats = () => {
   const now = Date.now();
   const oneHourAgo = now - (60 * 60 * 1000);
   const oneDayAgo = now - (24 * 60 * 60 * 1000);
-  
-  const recentRequests = apiRequestLog.filter(req => 
-    new Date(req.timestamp).getTime() > oneHourAgo
-  );
-  
-  const dailyRequests = apiRequestLog.filter(req => 
-    new Date(req.timestamp).getTime() > oneDayAgo
-  );
 
-  // Group by endpoint
+  const recentRequests = [];
+  const dailyRequests = [];
+
+  forEachLog((req) => {
+    const time = new Date(req.timestamp).getTime();
+    if (time > oneDayAgo) dailyRequests.push(req);
+    if (time > oneHourAgo) recentRequests.push(req);
+  });
+
   const endpointStats = {};
-  dailyRequests.forEach(req => {
+  dailyRequests.forEach((req) => {
     const key = req.endpoint;
     if (!endpointStats[key]) {
       endpointStats[key] = {
@@ -72,26 +92,24 @@ export const getApiRequestStats = () => {
         errors: 0,
       };
     }
-    endpointStats[key].count++;
+    endpointStats[key].count += 1;
     endpointStats[key].totalResponseTime += req.responseTime || 0;
     if (req.statusCode >= 400) {
-      endpointStats[key].errors++;
+      endpointStats[key].errors += 1;
     }
   });
 
-  // Calculate averages
-  Object.values(endpointStats).forEach(stat => {
-    stat.avgResponseTime = stat.count > 0 
-      ? Math.round(stat.totalResponseTime / stat.count) 
+  Object.values(endpointStats).forEach((stat) => {
+    stat.avgResponseTime = stat.count > 0
+      ? Math.round(stat.totalResponseTime / stat.count)
       : 0;
   });
 
-  // Get requests per hour (last 24 hours)
   const hourlyRequests = [];
-  for (let i = 23; i >= 0; i--) {
+  for (let i = 23; i >= 0; i -= 1) {
     const hourStart = new Date(now - (i * 60 * 60 * 1000));
     const hourEnd = i > 0 ? new Date(now - ((i - 1) * 60 * 60 * 1000)) : new Date(now);
-    const hourRequests = dailyRequests.filter(req => {
+    const hourRequests = dailyRequests.filter((req) => {
       const reqTime = new Date(req.timestamp).getTime();
       return reqTime >= hourStart.getTime() && reqTime < hourEnd.getTime();
     });
@@ -106,21 +124,20 @@ export const getApiRequestStats = () => {
     });
   }
 
-  // Get status code distribution
   const statusCodeDistribution = {};
   let clientErrors24h = 0;
   let serverErrors24h = 0;
   let totalErrors24h = 0;
 
-  dailyRequests.forEach(req => {
-    const code = Math.floor(req.statusCode / 100) * 100; // Group by 100s
+  dailyRequests.forEach((req) => {
+    const code = Math.floor(req.statusCode / 100) * 100;
     statusCodeDistribution[code] = (statusCodeDistribution[code] || 0) + 1;
     if (req.statusCode >= 500) {
-      serverErrors24h++;
-      totalErrors24h++;
+      serverErrors24h += 1;
+      totalErrors24h += 1;
     } else if (req.statusCode >= 400) {
-      clientErrors24h++;
-      totalErrors24h++;
+      clientErrors24h += 1;
+      totalErrors24h += 1;
     }
   });
 
@@ -129,8 +146,8 @@ export const getApiRequestStats = () => {
   const slowEndpoints = endpointList.filter((e) => e.avgResponseTime >= 2000).length;
 
   return {
-    totalRequests: apiRequestLog.length,
-    recentRequests: recentRequests.length, // Last hour
+    totalRequests: logSize,
+    recentRequests: recentRequests.length,
     dailyRequests: dailyRequests.length,
     endpointStats: endpointList,
     hourlyRequests,
@@ -151,10 +168,11 @@ export const getApiRequestStats = () => {
 const SLOW_RESPONSE_MS = 2000;
 
 export const getRecentErrors = (limit = 50) => {
-  return apiRequestLog
-    .filter((req) => req.statusCode >= 400)
-    .slice(-limit)
-    .reverse();
+  const errors = [];
+  forEachLog((req) => {
+    if (req.statusCode >= 400) errors.push(req);
+  });
+  return errors.slice(-limit).reverse();
 };
 
 export const getEndpointHealth = (slowThresholdMs = SLOW_RESPONSE_MS) => {
@@ -185,7 +203,4 @@ export const getEndpointHealth = (slowThresholdMs = SLOW_RESPONSE_MS) => {
     .sort((a, b) => b.errors - a.errors || b.avgResponseTime - a.avgResponseTime);
 };
 
-// Get live API requests (last N requests)
-export const getLiveApiRequests = (limit = 50) => {
-  return apiRequestLog.slice(-limit).reverse(); // Most recent first
-};
+export const getLiveApiRequests = (limit = 50) => getRecentSlice(limit);

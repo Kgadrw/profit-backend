@@ -20,6 +20,7 @@ import { checkUnreadMessageEmailReminders } from './chatNotifications.js';
 import { purgeExpiredDirectMessages } from '../controllers/workspaceDirectChatController.js';
 import { purgeExpiredGroupMessages } from '../controllers/workspaceMessageController.js';
 import { dispatchWorkReminders } from './workReminderService.js';
+import { shouldSkipBackgroundJobs } from './loadManager.js';
 
 // Helper function to check if two dates are within the same minute
 const isSameMinute = (date1, date2) => {
@@ -49,14 +50,24 @@ const isTimeToSend = (scheduledDate, now) => {
 // Check and send notifications for schedules at exact time
 const checkAndSendNotifications = async () => {
   try {
+    if (shouldSkipBackgroundJobs()) {
+      console.warn('Skipping schedule notifications while the server is under high load');
+      return;
+    }
+
     const now = new Date();
-    
-    // Find all pending schedules that haven't been notified yet or need advance notification
+    const dueWindowEnd = new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000);
+
     const schedulesToCheck = await Schedule.find({
       status: 'pending',
-    }).populate('clientId');
+      dueDate: { $lte: dueWindowEnd },
+    })
+      .populate('clientId')
+      .limit(1000);
 
-    console.log(`Checking ${schedulesToCheck.length} schedules for notifications at ${now.toISOString()}`);
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`Checking ${schedulesToCheck.length} schedules for notifications at ${now.toISOString()}`);
+    }
 
     // Batch emails that fire in the same minute for the same recipient.
     const userDigest = new Map(); // userId -> { user, schedules: [] }
@@ -165,6 +176,7 @@ export const startScheduler = () => {
   // Run every minute to check for exact scheduled times
   // Format: second minute hour day month weekday
   cron.schedule('* * * * *', async () => {
+    if (shouldSkipBackgroundJobs()) return;
     await checkAndSendNotifications();
     await dispatchWorkReminders();
   });
@@ -179,6 +191,7 @@ export const startScheduler = () => {
 
   // Monthly payment reminders: run daily at 08:00 server time
   cron.schedule('0 8 * * *', async () => {
+    if (shouldSkipBackgroundJobs()) return;
     await checkAndSendMonthlyPaymentReminders();
     await checkRecurringExpenses();
     try {
@@ -212,6 +225,7 @@ export const startScheduler = () => {
 
   // Purge expired disappearing messages every minute
   cron.schedule('* * * * *', async () => {
+    if (shouldSkipBackgroundJobs()) return;
     try {
       const [dmPurged, groupPurged] = await Promise.all([
         purgeExpiredDirectMessages(),

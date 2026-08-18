@@ -11,6 +11,8 @@ import {
 let wss = null;
 const connectedClients = new Map(); // Map<userId, Set<WebSocket>>
 
+const isDev = process.env.NODE_ENV === 'development';
+
 /**
  * Initialize WebSocket server
  * @param {http.Server} server - HTTP server instance
@@ -26,8 +28,11 @@ export function initializeWebSocket(server) {
   wss.on('connection', (ws, req) => {
     const { query } = parse(req.url, true);
     const userId = query?.userId;
-    
-    console.log(`✅ WebSocket client connected: ${ws.readyState === 1 ? 'OPEN' : 'CONNECTING'}`);
+    ws.isAlive = true;
+
+    if (isDev) {
+      console.log(`✅ WebSocket client connected: ${ws.readyState === 1 ? 'OPEN' : 'CONNECTING'}`);
+    }
 
     // Store user connection
     if (userId) {
@@ -36,8 +41,14 @@ export function initializeWebSocket(server) {
       }
       connectedClients.get(userId).add(ws);
       ws.userId = userId;
-      console.log(`✅ User ${userId} connected (${connectedClients.get(userId).size} connections)`);
+      if (isDev) {
+        console.log(`✅ User ${userId} connected (${connectedClients.get(userId).size} connections)`);
+      }
     }
+
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
 
     // Handle incoming messages
     ws.on('message', (message) => {
@@ -60,7 +71,9 @@ export function initializeWebSocket(server) {
             timestamp: new Date().toISOString(),
           }));
           
-          console.log(`✅ User ${userId} authenticated via WebSocket`);
+          if (isDev) {
+            console.log(`✅ User ${userId} authenticated via WebSocket`);
+          }
         }
         
         // Handle ping/pong for keepalive
@@ -95,8 +108,10 @@ export function initializeWebSocket(server) {
             connectedClients.delete(ws.userId);
           }
         }
-        console.log(`❌ User ${ws.userId} disconnected (${userConnections?.size || 0} remaining)`);
-      } else {
+        if (isDev) {
+          console.log(`❌ User ${ws.userId} disconnected (${userConnections?.size || 0} remaining)`);
+        }
+      } else if (isDev) {
         console.log(`❌ WebSocket client disconnected`);
       }
     });
@@ -166,7 +181,7 @@ export function emitToUser(userId, event, data) {
       }
     });
     
-    if (sentCount > 0) {
+    if (sentCount > 0 && isDev) {
       console.log(`📤 Emitted ${event} to user ${userId} (${sentCount} connection(s))`);
     }
   }
@@ -194,7 +209,7 @@ export function emitToAll(event, data) {
     }
   });
   
-  if (sentCount > 0) {
+  if (sentCount > 0 && isDev) {
     console.log(`📤 Emitted ${event} to all clients (${sentCount} connection(s))`);
   }
 }
@@ -222,7 +237,18 @@ export function emitToOthers(senderWs, event, data) {
     }
   });
   
-  if (sentCount > 0) {
+  if (sentCount > 0 && isDev) {
     console.log(`📤 Emitted ${event} to all except sender (${sentCount} connection(s))`);
   }
+}
+
+export function getWebSocketStats() {
+  let sockets = 0;
+  for (const conns of connectedClients.values()) {
+    sockets += conns.size;
+  }
+  return {
+    users: connectedClients.size,
+    sockets: wss ? wss.clients.size : sockets,
+  };
 }

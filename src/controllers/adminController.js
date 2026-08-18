@@ -305,7 +305,11 @@ export const getSystemHealth = async (req, res) => {
     // Check database connection
     let databaseStatus = 'connected';
     try {
-      await Product.findOne().limit(1);
+      if (mongoose.connection.readyState !== 1 || !mongoose.connection.db) {
+        databaseStatus = 'disconnected';
+      } else {
+        await mongoose.connection.db.admin().command({ ping: 1 });
+      }
     } catch (error) {
       databaseStatus = 'disconnected';
     }
@@ -324,12 +328,19 @@ export const getSystemHealth = async (req, res) => {
       }),
     ]);
 
-    const memoryUsed = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    const memoryTotal = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
+    const { getLoadSnapshot } = await import('../utils/loadManager.js');
+    const { getWebSocketStats } = await import('../utils/websocket.js');
+    const load = getLoadSnapshot();
+    const sockets = getWebSocketStats();
+
+    const memoryUsed = load.memory.heapUsedMb;
+    const memoryTotal = load.memory.heapTotalMb;
+    const memoryRss = load.memory.rssMb;
     const memoryPercent = memoryTotal > 0 ? Math.round((memoryUsed / memoryTotal) * 100) : 0;
+    const cpuPercent = load.cpuPercent;
 
     let platformStatus = 'healthy';
-    if (databaseStatus !== 'connected' || errorSummary.serverErrors24h > 0) {
+    if (databaseStatus !== 'connected' || errorSummary.serverErrors24h > 0 || load.level === 'critical') {
       platformStatus = 'critical';
     } else if (
       errorSummary.totalErrors24h > 10
@@ -338,6 +349,9 @@ export const getSystemHealth = async (req, res) => {
       || paymentsWithSyncIssues > 0
       || stuckPayments > 0
       || memoryPercent >= 90
+      || cpuPercent >= 85
+      || load.level === 'high'
+      || load.level === 'elevated'
     ) {
       platformStatus = 'degraded';
     }
@@ -398,10 +412,30 @@ export const getSystemHealth = async (req, res) => {
           : 'No stuck payments',
       },
       {
+        id: 'cpu',
+        label: 'CPU usage',
+        status: cpuPercent >= 90 || load.level === 'critical'
+          ? 'error'
+          : cpuPercent >= 70 || load.level === 'high' || load.level === 'elevated'
+            ? 'warning'
+            : 'ok',
+        detail: `${cpuPercent}% of ${load.cores} core${load.cores === 1 ? '' : 's'} · event loop ${load.eventLoopLagMs}ms · ${load.protecting ? 'load guard on' : 'load guard idle'}`,
+      },
+      {
         id: 'memory',
         label: 'Server memory',
         status: memoryPercent >= 90 ? 'error' : memoryPercent >= 75 ? 'warning' : 'ok',
-        detail: `${memoryUsed} MB / ${memoryTotal} MB (${memoryPercent}%)`,
+        detail: `Heap ${memoryUsed} MB / ${memoryTotal} MB (${memoryPercent}%) · RSS ${memoryRss} MB`,
+      },
+      {
+        id: 'concurrency',
+        label: 'Live traffic',
+        status: load.inFlight >= load.maxConcurrent
+          ? 'error'
+          : load.inFlight >= load.maxConcurrent * 0.8
+            ? 'warning'
+            : 'ok',
+        detail: `${load.inFlight} in-flight / ${load.maxConcurrent} max · ${sockets.sockets} sockets · ${load.shedCount} shed`,
       },
     ];
 
@@ -424,6 +458,21 @@ export const getSystemHealth = async (req, res) => {
       memory: {
         used: memoryUsed,
         total: memoryTotal,
+        rss: memoryRss,
+      },
+      cpu: {
+        percent: cpuPercent,
+        cores: load.cores,
+        loadAvg: load.loadAvg,
+        eventLoopLagMs: load.eventLoopLagMs,
+        level: load.level,
+        protecting: load.protecting,
+        inFlight: load.inFlight,
+        peakInFlight: load.peakInFlight,
+        maxConcurrent: load.maxConcurrent,
+        shedCount: load.shedCount,
+        sockets: sockets.sockets,
+        socketUsers: sockets.users,
       },
       statusHistory: statusHistory || [],
       platform: {

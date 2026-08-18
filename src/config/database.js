@@ -59,6 +59,12 @@ const MONGODB_URI = process.env.MONGODB_URI || (() => {
 
 const connectOptions = {
   serverSelectionTimeoutMS: 10000,
+  maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 50,
+  minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 5,
+  maxIdleTimeMS: 30_000,
+  waitQueueTimeoutMS: 10_000,
+  socketTimeoutMS: 45_000,
+  heartbeatFrequencyMS: 10_000,
 };
 
 export const connectDatabase = async () => {

@@ -3,6 +3,7 @@ import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
+import compression from 'compression';
 import apiRoutes from './routes/index.js';
 import { connectDatabase } from './config/database.js';
 import { trackApiRequest } from './middleware/apiTracker.js';
@@ -12,11 +13,20 @@ import { logPaypackStartupWarnings } from './utils/paypack.js';
 import { startScheduler } from './utils/scheduler.js';
 import { initializeWebSocket } from './utils/websocket.js';
 import { migrateLegacyUploadsToDatabase } from './utils/migrateLegacyUploadsToDatabase.js';
+import { startLoadManager, loadGuard, shouldSkipCompression } from './utils/loadManager.js';
 import ServerStatus from './models/ServerStatus.js';
+
+startLoadManager();
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
+server.requestTimeout = Number(process.env.REQUEST_TIMEOUT_MS) || 120_000;
+server.timeout = Number(process.env.SOCKET_TIMEOUT_MS) || 120_000;
+server.maxConnections = Number(process.env.MAX_CONNECTIONS) || 5000;
 
 // Track server start time for uptime calculation
 const serverStartTime = Date.now();
@@ -133,6 +143,17 @@ const corsOptions = {
   exposedHeaders: ['Content-Length', 'X-Request-Id']
 };
 app.use(cors(corsOptions));
+
+app.use(compression({
+  threshold: 1024,
+  level: 4,
+  filter: (req, res) => {
+    if (shouldSkipCompression()) return false;
+    return compression.filter(req, res);
+  },
+}));
+
+app.use(loadGuard);
 
 // Paypack webhook — HEAD ping + POST payload (raw body for signature verification)
 const paypackWebhookPath = '/api/subscription/webhook/paypack';
@@ -300,6 +321,7 @@ server.listen(PORT, async () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📋 API endpoints available at http://localhost:${PORT}/api`);
   console.log(`🔌 WebSocket server available at ws://localhost:${PORT}/ws`);
+  console.log(`🛡️ Load guard: max ${process.env.MAX_CONCURRENT_REQUESTS || 250} in-flight requests, ${server.maxConnections} sockets`);
   logPaypackStartupWarnings();
 
   // Start schedule notification scheduler
