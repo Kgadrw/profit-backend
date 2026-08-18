@@ -294,6 +294,7 @@ export const getWorkspaceMessages = async (req, res) => {
 
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
     const before = req.query.before;
+    const after = req.query.after;
 
     const now = new Date();
     const query = {
@@ -306,6 +307,15 @@ export const getWorkspaceMessages = async (req, res) => {
 
     const membership = await assertWorkspaceMember(workspaceId, userId);
     applyMembershipVisibleFrom(query, membership, before);
+    if (after) {
+      const afterDate = new Date(after);
+      if (!Number.isNaN(afterDate.getTime())) {
+        query.createdAt = {
+          ...(query.createdAt || {}),
+          $gt: afterDate,
+        };
+      }
+    }
 
     const messages = await WorkspaceMessage.find(query)
       .sort({ createdAt: -1 })
