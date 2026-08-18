@@ -74,6 +74,23 @@ const teamTaskSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    subtasks: {
+      type: [
+        {
+          title: {
+            type: String,
+            required: true,
+            trim: true,
+            maxlength: 200,
+          },
+          done: {
+            type: Boolean,
+            default: false,
+          },
+        },
+      ],
+      default: [],
+    },
     completedAt: {
       type: Date,
     },
@@ -118,6 +135,19 @@ const teamTaskSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+teamTaskSchema.set('toJSON', {
+  transform(_doc, ret) {
+    if (!Array.isArray(ret.subtasks)) ret.subtasks = [];
+    return ret;
+  },
+});
+teamTaskSchema.set('toObject', {
+  transform(_doc, ret) {
+    if (!Array.isArray(ret.subtasks)) ret.subtasks = [];
+    return ret;
+  },
+});
 
 teamTaskSchema.index({ userId: 1, assigneeId: 1, status: 1 });
 teamTaskSchema.index({ userId: 1, monthKey: 1 });

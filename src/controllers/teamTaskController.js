@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import TeamTask from '../models/TeamTask.js';
 import TeamMember from '../models/TeamMember.js';
 import Project from '../models/Project.js';
@@ -14,6 +15,73 @@ import {
 } from '../utils/taskActivity.js';
 
 const DEFAULT_REMINDER_OFFSETS = [1440, 60];
+const MAX_SUBTASKS = 40;
+
+function normalizeSubtasks(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const title = String(item?.title || '').trim().slice(0, 200);
+      if (!title) return null;
+      const row = {
+        title,
+        done: Boolean(item?.done),
+      };
+      if (item?._id && mongoose.Types.ObjectId.isValid(item._id)) {
+        row._id = item._id;
+      }
+      return row;
+    })
+    .filter(Boolean)
+    .slice(0, MAX_SUBTASKS);
+}
+
+function subtaskDoneById(list) {
+  const map = new Map();
+  for (const row of list || []) {
+    if (row?._id) map.set(String(row._id), Boolean(row.done));
+  }
+  return map;
+}
+
+function hasSubtaskStructureChanged(existing, next) {
+  if ((existing || []).length !== (next || []).length) return true;
+  return next.some((row, index) => {
+    const prev = existing[index];
+    if (!prev) return true;
+    if (String(prev.title || '') !== String(row.title || '')) return true;
+    return String(prev._id || '') !== String(row._id || '');
+  });
+}
+
+function hasSubtaskDoneChanged(existing, next) {
+  const prevDone = subtaskDoneById(existing);
+  return next.some((row, index) => {
+    if (row._id && prevDone.has(String(row._id))) {
+      return Boolean(row.done) !== prevDone.get(String(row._id));
+    }
+    const prev = existing[index];
+    if (!prev) return Boolean(row.done);
+    return Boolean(row.done) !== Boolean(prev.done);
+  });
+}
+
+function applySubtasksKeepingDone(existing, next) {
+  const prevDone = subtaskDoneById(existing);
+  const prevByTitle = new Map();
+  for (const row of existing || []) {
+    if (!prevByTitle.has(row.title)) prevByTitle.set(row.title, Boolean(row.done));
+  }
+  return next.map((row) => {
+    let done = false;
+    if (row._id && prevDone.has(String(row._id))) {
+      done = prevDone.get(String(row._id));
+    } else if (prevByTitle.has(row.title)) {
+      done = prevByTitle.get(row.title);
+    }
+    return { ...row, done };
+  });
+}
 
 function normalizeReminders(value, fallbackToDefaults = false) {
   if (value === undefined) {
@@ -205,6 +273,7 @@ export const createTeamTask = async (req, res) => {
       monthKey,
       projectId,
       milestoneId,
+      subtasks,
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ error: 'Task title is required' });
@@ -243,6 +312,7 @@ export const createTeamTask = async (req, res) => {
       monthKey: monthKey || undefined,
       projectId: linkedProjectId,
       milestoneId: linkedMilestoneId,
+      subtasks: normalizeSubtasks(subtasks),
       ...initialTaskActivityFields(initialStatus),
     });
 
@@ -284,6 +354,7 @@ export const updateTeamTask = async (req, res) => {
       'sortOrder',
       'projectId',
       'milestoneId',
+      'subtasks',
     ];
 
     // Done tasks are locked: only status (reopen) or completion note may change.
@@ -332,6 +403,29 @@ export const updateTeamTask = async (req, res) => {
           task.milestoneId = await resolveLinkedMilestoneId(req, req.body.milestoneId, projectRef);
         } catch (resolveError) {
           return res.status(400).json({ error: resolveError.message || 'Invalid milestone' });
+        }
+      } else if (field === 'subtasks') {
+        const existing = Array.isArray(task.subtasks) ? task.subtasks : [];
+        const next = normalizeSubtasks(req.body.subtasks);
+        const structureChanged = hasSubtaskStructureChanged(existing, next);
+        const doneChanged = hasSubtaskDoneChanged(existing, next);
+        if (doneChanged) {
+          try {
+            await assertCurrentUserIsAssignee(
+              req,
+              task.assigneeId,
+              'Only the assigned team member can mark subtasks complete',
+            );
+          } catch (accessError) {
+            return res.status(accessError.statusCode || 403).json({
+              error: accessError.message,
+            });
+          }
+          task.subtasks = next;
+        } else if (structureChanged) {
+          task.subtasks = applySubtasksKeepingDone(existing, next);
+        } else {
+          task.subtasks = next;
         }
       } else if (typeof req.body[field] === 'string') {
         task[field] = req.body[field].trim();
