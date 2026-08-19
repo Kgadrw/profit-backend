@@ -62,6 +62,12 @@ const teamReportSchema = new mongoose.Schema(
       trim: true,
       maxlength: [255],
     },
+    visibility: {
+      type: String,
+      enum: ['public', 'private'],
+      default: 'private',
+      index: true,
+    },
     reportTo: {
       type: [
         {

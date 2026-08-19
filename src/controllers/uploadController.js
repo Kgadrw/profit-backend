@@ -17,6 +17,7 @@ import {
 } from '../utils/cloudinaryService.js';
 import Workspace from '../models/Workspace.js';
 import WorkspaceDirectConversation from '../models/WorkspaceDirectConversation.js';
+import TeamReport from '../models/TeamReport.js';
 import { parseStoredFileUrl } from '../utils/storedFileService.js';
 import {
   buildFileResourceKey,
@@ -168,12 +169,18 @@ export const getCompanyDocumentFile = async (req, res) => {
       return res.status(403).json({ error: 'Admin cannot access files' });
     }
 
-    const { userId: fileUserId, filename } = req.params;
-    if (String(fileUserId) !== String(userId)) {
+    const fileUserId = String(req.params.userId || '');
+    const filename = decodeURIComponent(String(req.params.filename || ''));
+    if (!fileUserId || !filename) {
+      return res.status(400).json({ error: 'Invalid file path' });
+    }
+
+    const allowed = await canAccessCompanyDocumentFile(userId, fileUserId, filename);
+    if (!allowed) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const stored = await getStoredFile(userId, 'document', filename);
+    const stored = await getStoredFile(fileUserId, 'document', filename);
     if (!stored) {
       return res.status(404).json({ error: 'File not found' });
     }
@@ -184,6 +191,52 @@ export const getCompanyDocumentFile = async (req, res) => {
     res.status(500).json({ error: 'Failed to load file' });
   }
 };
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function canAccessCompanyDocumentFile(viewerUserId, fileUserId, filename) {
+  if (String(viewerUserId) === String(fileUserId)) return true;
+
+  const pathA = `/files/documents/${fileUserId}/${filename}`;
+  const pathB = `/uploads/documents/${fileUserId}/${filename}`;
+  const reports = await TeamReport.find({
+    $or: [
+      { attachmentUrl: new RegExp(escapeRegex(pathA), 'i') },
+      { attachmentUrl: new RegExp(escapeRegex(pathB), 'i') },
+    ],
+  })
+    .select('submitterUserId reportTo visibility workspaceId')
+    .limit(20)
+    .lean();
+
+  if (!reports.length) return false;
+
+  const workspaceIds = [
+    ...new Set(reports.map((report) => report.workspaceId).filter(Boolean).map(String)),
+  ];
+  const memberships = workspaceIds.length
+    ? await WorkspaceMember.find({
+        userId: viewerUserId,
+        workspaceId: { $in: workspaceIds },
+      })
+        .select('workspaceId role')
+        .lean()
+    : [];
+  const membershipByWorkspace = new Map(
+    memberships.map((member) => [String(member.workspaceId), member]),
+  );
+
+  return reports.some((report) => {
+    if (String(report.submitterUserId) === String(viewerUserId)) return true;
+    if ((report.reportTo || []).some((recipient) => recipient?.userId && String(recipient.userId) === String(viewerUserId))) {
+      return true;
+    }
+    if (report.visibility !== 'public' || !report.workspaceId) return false;
+    return membershipByWorkspace.has(String(report.workspaceId));
+  });
+}
 
 const profileImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 

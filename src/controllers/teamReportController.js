@@ -21,10 +21,8 @@ const normalizeDate = (value) => {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 };
 
-function canReviewReports(req) {
-  if (!isWorkspaceApprovalEnabled(req)) return true;
-  const role = req.dataScope?.role;
-  return role === 'owner' || role === 'admin';
+function normalizeVisibility(value) {
+  return value === 'public' ? 'public' : 'private';
 }
 
 function isAssignedReviewer(report, userId) {
@@ -38,12 +36,20 @@ function canReviewReport(req, report) {
   return isAssignedReviewer(report, req.user?._id);
 }
 
+function canViewReport(req, report) {
+  if (String(report.submitterUserId) === String(req.user?._id)) return true;
+  if (canReviewReport(req, report)) return true;
+  if (normalizeVisibility(report.visibility) === 'public') return true;
+  return false;
+}
+
 function buildReportListQuery(req, extra = {}) {
   const query = buildListQuery(req, {});
-  if (isWorkspaceApprovalEnabled(req) && !canReviewReports(req)) {
+  if (isWorkspaceApprovalEnabled(req)) {
     query.$or = [
       { submitterUserId: req.user._id },
       { 'reportTo.userId': req.user._id },
+      { visibility: 'public' },
     ];
   }
   return { ...query, ...extra };
@@ -57,6 +63,7 @@ function formatTeamReport(record) {
     submitterUserId: plain.submitterUserId ? String(plain.submitterUserId) : undefined,
     blockers: plain.blockers || '',
     nextSteps: plain.nextSteps || '',
+    visibility: normalizeVisibility(plain.visibility),
     reportTo: (plain.reportTo || []).map((recipient) => ({
       ...recipient,
       memberId: recipient.memberId ? String(recipient.memberId) : recipient.memberId,
@@ -72,8 +79,7 @@ async function findTeamReport(req, id) {
     error.statusCode = 404;
     throw error;
   }
-  const isSubmitter = String(report.submitterUserId) === String(req.user?._id);
-  if (!isSubmitter && !canReviewReport(req, report)) {
+  if (!canViewReport(req, report)) {
     const error = new Error('Team report not found');
     error.statusCode = 404;
     throw error;
@@ -236,6 +242,7 @@ export const createTeamReport = async (req, res) => {
       attachmentUrl,
       attachmentName,
       reportTo,
+      visibility,
     } = req.body || {};
 
     const cleanTitle = sanitizeText(title, 200);
@@ -279,6 +286,7 @@ export const createTeamReport = async (req, res) => {
       nextSteps: sanitizeText(nextSteps, 3000) || '',
       attachmentUrl: sanitizeText(attachmentUrl, 1000),
       attachmentName: sanitizeText(attachmentName, 255),
+      visibility: normalizeVisibility(visibility),
       reportTo: recipients,
       status,
       ...reviewerFields,
@@ -330,6 +338,7 @@ export const updateTeamReport = async (req, res) => {
       attachmentUrl,
       attachmentName,
       reportTo,
+      visibility,
     } = req.body || {};
 
     if (title !== undefined) {
@@ -363,6 +372,7 @@ export const updateTeamReport = async (req, res) => {
     if (nextSteps !== undefined) report.nextSteps = sanitizeText(nextSteps, 3000) || '';
     if (attachmentUrl !== undefined) report.attachmentUrl = sanitizeText(attachmentUrl, 1000);
     if (attachmentName !== undefined) report.attachmentName = sanitizeText(attachmentName, 255);
+    if (visibility !== undefined) report.visibility = normalizeVisibility(visibility);
     let recipients;
     if (reportTo !== undefined) {
       recipients = await resolveReportRecipients(req, reportTo);
