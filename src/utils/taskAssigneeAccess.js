@@ -12,18 +12,38 @@ async function findLinkedAssignee(req, assigneeId) {
   return member;
 }
 
-export async function isCurrentUserAssignee(req, assigneeId) {
-  const member = await findLinkedAssignee(req, assigneeId);
+async function findLinkedAssigneeInList(req, assigneeIds) {
+  if (!Array.isArray(assigneeIds) || assigneeIds.length === 0) return null;
+  const members = await TeamMember.find(
+    buildListQuery(req, { _id: { $in: assigneeIds }, linkedUserId: req.user._id }),
+  )
+    .select('linkedUserId')
+    .lean();
+  return members.length > 0 ? members[0] : null;
+}
+
+export async function isCurrentUserAssignee(req, assigneeIdOrTask) {
+  if (assigneeIdOrTask?.assignees?.length > 0) {
+    const member = await findLinkedAssigneeInList(req, assigneeIdOrTask.assignees);
+    return Boolean(member);
+  }
+  const id = assigneeIdOrTask?.assigneeId || assigneeIdOrTask;
+  const member = await findLinkedAssignee(req, id);
   return Boolean(member);
 }
 
-/** Only the team member linked to the current user may change a task's status. */
+/** Only a team member linked to the current user may change a task's status. */
 export async function assertCurrentUserIsAssignee(
   req,
-  assigneeId,
-  message = 'Only the assigned team member can change task status',
+  assigneeIdOrTask,
+  message = 'Only an assigned team member can change task status',
 ) {
-  const member = await findLinkedAssignee(req, assigneeId);
+  if (assigneeIdOrTask?.assignees?.length > 0) {
+    const member = await findLinkedAssigneeInList(req, assigneeIdOrTask.assignees);
+    if (member) return member;
+  }
+  const id = assigneeIdOrTask?.assigneeId || assigneeIdOrTask;
+  const member = await findLinkedAssignee(req, id);
   if (!member) {
     const error = new Error(message);
     error.statusCode = 403;

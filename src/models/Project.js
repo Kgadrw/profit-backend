@@ -53,6 +53,11 @@ const projectSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    completionNotes: {
+      type: String,
+      trim: true,
+      maxlength: 2000,
+    },
   },
   { timestamps: true },
 );

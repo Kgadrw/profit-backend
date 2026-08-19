@@ -59,6 +59,7 @@ import corporateCalendarRoutes from './corporateCalendarRoutes.js';
 import pushRoutes from './pushRoutes.js';
 import greetingRoutes from './greetingRoutes.js';
 import aiRoutes from './aiRoutes.js';
+import projectApprovalRoutes from './projectApprovalRoutes.js';
 
 const router = express.Router();
 
@@ -123,5 +124,6 @@ router.use('/corporate-calendar', corporateCalendarRoutes);
 router.use('/push', pushRoutes);
 router.use('/greetings', greetingRoutes);
 router.use('/ai', aiRoutes);
+router.use('/project-approvals', projectApprovalRoutes);
 
 export default router;

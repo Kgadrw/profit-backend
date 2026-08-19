@@ -143,8 +143,11 @@ export const getProjects = async (req, res) => {
     const query = buildListQuery(req);
     if (PROJECT_STATUSES.includes(status)) query.status = status;
 
+    const eightWeeksAgo = new Date();
+    eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 56);
+
     const scope = buildListQuery(req);
-    const [projects, projectTaskCounts, teamTaskCounts] = await Promise.all([
+    const [projects, projectTaskCounts, teamTaskCounts, projectActivityTasks] = await Promise.all([
       Project.find(query)
         .populate('leadMemberId', 'name email jobTitle department')
         .sort({ status: 1, updatedAt: -1 })
@@ -167,6 +170,18 @@ export const getProjects = async (req, res) => {
           },
         },
       ]),
+      TeamTask.find({
+        ...scope,
+        projectId: { $ne: null },
+        $or: [
+          { createdAt: { $gte: eightWeeksAgo } },
+          { startedAt: { $gte: eightWeeksAgo } },
+          { completedAt: { $gte: eightWeeksAgo } },
+          { 'activityEvents.at': { $gte: eightWeeksAgo } },
+        ],
+      })
+        .select('projectId createdAt startedAt completedAt updatedAt status activityEvents')
+        .lean(),
     ]);
 
     const taskStatusByProject = new Map();
@@ -186,14 +201,51 @@ export const getProjects = async (req, res) => {
       bump(row._id?.projectId, row._id?.status, row.count || 0);
     }
 
-    const data = projects.map((project) => ({
-      ...project,
-      taskStatus: taskStatusByProject.get(String(project._id)) || {
-        todo: 0,
-        in_progress: 0,
-        done: 0,
-      },
-    }));
+    const activityByProject = new Map();
+    const weekKey = (date) => {
+      const d = new Date(date);
+      if (Number.isNaN(d.getTime())) return null;
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      const dayOffset = Math.floor((d - yearStart) / (1000 * 60 * 60 * 24));
+      const week = String(Math.floor(dayOffset / 7)).padStart(2, '0');
+      return `${d.getUTCFullYear()}-${week}`;
+    };
+
+    for (const task of projectActivityTasks) {
+      for (const event of deriveTaskActivityEvents(task)) {
+        if (!event?.projectId || !event?.at) continue;
+        const at = new Date(event.at);
+        if (Number.isNaN(at.getTime()) || at < eightWeeksAgo) continue;
+        const projectKey = String(event.projectId);
+        const bucketKey = weekKey(at);
+        if (!bucketKey) continue;
+        if (!activityByProject.has(projectKey)) activityByProject.set(projectKey, new Map());
+        const projectWeeks = activityByProject.get(projectKey);
+        if (!projectWeeks.has(bucketKey)) {
+          projectWeeks.set(bucketKey, { created: 0, inProgress: 0, done: 0 });
+        }
+        const bucket = projectWeeks.get(bucketKey);
+        if (event.kind === 'created') bucket.created += 1;
+        else if (event.kind === 'started' || event.kind === 'progress') bucket.inProgress += 1;
+        else if (event.kind === 'completed') bucket.done += 1;
+      }
+    }
+
+    const data = projects.map((project) => {
+      const pid = String(project._id);
+      const rawMap = activityByProject.get(pid);
+      const activity = rawMap
+        ? Array.from(rawMap.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([, value]) => value)
+            .slice(-8)
+        : [];
+      return {
+        ...project,
+        taskStatus: taskStatusByProject.get(pid) || { todo: 0, in_progress: 0, done: 0 },
+        activity,
+      };
+    });
 
     res.json({ data });
   } catch (error) {
@@ -638,6 +690,7 @@ export const updateProject = async (req, res) => {
       'targetEndDate',
       'leadMemberId',
       'clientName',
+      'completionNotes',
     ];
 
     for (const field of fields) {

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import TeamTask from '../models/TeamTask.js';
 import TeamMember from '../models/TeamMember.js';
+import User from '../models/User.js';
 import Project from '../models/Project.js';
 import ProjectMilestone from '../models/ProjectMilestone.js';
 import Notification from '../models/Notification.js';
@@ -13,6 +14,11 @@ import {
   applyTaskStatusActivity,
   initialTaskActivityFields,
 } from '../utils/taskActivity.js';
+import {
+  sendEmail,
+  renderEmailTemplate,
+  getFrontendBaseUrl,
+} from '../utils/emailService.js';
 
 const DEFAULT_REMINDER_OFFSETS = [1440, 60];
 const MAX_SUBTASKS = 40;
@@ -100,8 +106,18 @@ function normalizeReminders(value, fallbackToDefaults = false) {
 const populateTask = (query) =>
   query
     .populate('assigneeId', 'name email jobTitle department status')
+    .populate('assignees', 'name email jobTitle department status')
+    .populate('assignedBy', 'name email')
     .populate('projectId', 'name status')
     .populate('milestoneId', 'title status dueDate');
+
+function normalizeAssignees(body) {
+  if (Array.isArray(body.assignees) && body.assignees.length > 0) {
+    return body.assignees.filter(Boolean);
+  }
+  if (body.assigneeId) return [body.assigneeId];
+  return [];
+}
 
 async function resolveLinkedProjectId(req, projectId) {
   if (projectId === undefined) return undefined;
@@ -150,6 +166,88 @@ const notifyOwnerTaskCompleted = async (ownerId, task, member, completionNote) =
   }
 };
 
+function buildLoginAwareUrl(path) {
+  const baseUrl = getFrontendBaseUrl().replace(/\/$/, '');
+  const safePath =
+    typeof path === 'string' && path.startsWith('/') && !path.startsWith('//')
+      ? path
+      : '/';
+  return `${baseUrl}/login?redirect=${encodeURIComponent(safePath)}`;
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function notifyAssigneesOfTaskAssignment(task, members, assignerName) {
+  const taskUrl = buildLoginAwareUrl(`/team/tasks?task=${encodeURIComponent(String(task._id))}`);
+  const priorityLabel = task.priority ? task.priority.charAt(0).toUpperCase() + task.priority.slice(1) : 'Medium';
+  const dueDateLabel = task.dueDate
+    ? new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'No deadline';
+
+  for (const member of members) {
+    try {
+      if (member.linkedUserId) {
+        await Notification.create({
+          userId: member.linkedUserId,
+          sentBy: 'system',
+          type: 'task_assigned',
+          title: 'New task assigned to you',
+          body: `${assignerName} assigned you "${task.title}"`,
+          icon: '/logo.png',
+          data: {
+            taskId: task._id,
+            department: task.department,
+            route: `/team/tasks?task=${encodeURIComponent(String(task._id))}`,
+            href: `/team/tasks?task=${encodeURIComponent(String(task._id))}`,
+          },
+          read: false,
+        });
+      }
+
+      const recipientEmail = member.email;
+      if (!recipientEmail) continue;
+
+      const greetingName = member.name ? escapeHtml(member.name.split(' ')[0]) : 'Team member';
+      const paragraphs = [
+        `<strong>${escapeHtml(assignerName)}</strong> has assigned you a new task on Trippo.`,
+        `<strong>Task:</strong> ${escapeHtml(task.title)}`,
+        task.description
+          ? `<strong>Description:</strong> ${escapeHtml(task.description)}`
+          : null,
+        `<strong>Priority:</strong> ${escapeHtml(priorityLabel)} &nbsp;&bull;&nbsp; <strong>Due:</strong> ${escapeHtml(dueDateLabel)}`,
+      ].filter(Boolean);
+
+      const html = renderEmailTemplate({
+        eyebrow: 'TASK ASSIGNMENT',
+        title: 'You have been assigned a new task',
+        greeting: `Dear ${greetingName},`,
+        paragraphs,
+        actionUrl: taskUrl,
+        actionText: 'Open task in Trippo',
+        closing: 'Best regards,',
+      });
+
+      const text = `Dear ${member.name || 'Team member'},\n\n${assignerName} assigned you a task: "${task.title}"\nPriority: ${priorityLabel}\nDue: ${dueDateLabel}\n\nOpen it here: ${taskUrl}\n\nBest regards,\nTrippo`;
+
+      await sendEmail({
+        to: recipientEmail,
+        subject: `New task assigned: ${task.title}`,
+        text,
+        html,
+        fromName: 'Trippo Tasks',
+      });
+    } catch (error) {
+      console.error(`Failed to notify assignee ${member._id}:`, error);
+    }
+  }
+}
+
 export const getTeamTasks = async (req, res) => {
   try {
     assertPageAccess(req, 'team');
@@ -157,9 +255,15 @@ export const getTeamTasks = async (req, res) => {
     const query = buildListQuery(req);
     if (status) query.status = status;
     if (department) query.department = department;
-    if (assigneeId) query.assigneeId = assigneeId;
+    if (assigneeId) {
+      query.$or = [{ assigneeId }, { assignees: assigneeId }];
+    }
     if (monthKey) query.monthKey = monthKey;
-    if (projectId) query.projectId = projectId;
+    if (projectId === 'none') {
+      query.projectId = null;
+    } else if (projectId) {
+      query.projectId = projectId;
+    }
 
     const tasks = await populateTask(TeamTask.find(query)).sort({
       status: 1,
@@ -190,8 +294,21 @@ export const getTeamTaskSummary = async (req, res) => {
       TeamTask.aggregate([
         { $match: match },
         {
+          $project: {
+            status: 1,
+            member: {
+              $cond: {
+                if: { $gt: [{ $size: { $ifNull: ['$assignees', []] } }, 0] },
+                then: '$assignees',
+                else: { $cond: { if: '$assigneeId', then: ['$assigneeId'], else: [] } },
+              },
+            },
+          },
+        },
+        { $unwind: '$member' },
+        {
           $group: {
-            _id: '$assigneeId',
+            _id: '$member',
             total: { $sum: 1 },
             done: { $sum: { $cond: [{ $eq: ['$status', 'done'] }, 1, 0] } },
             inProgress: { $sum: { $cond: [{ $eq: ['$status', 'in_progress'] }, 1, 0] } },
@@ -264,7 +381,6 @@ export const createTeamTask = async (req, res) => {
     const {
       title,
       description,
-      assigneeId,
       department,
       status,
       priority,
@@ -277,10 +393,16 @@ export const createTeamTask = async (req, res) => {
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ error: 'Task title is required' });
-    if (!assigneeId) return res.status(400).json({ error: 'Assignee is required' });
 
-    const member = await TeamMember.findOne(buildListQuery(req, { _id: assigneeId }));
-    if (!member) return res.status(400).json({ error: 'Invalid team member' });
+    const assigneesList = normalizeAssignees(req.body);
+    if (assigneesList.length === 0) return res.status(400).json({ error: 'At least one assignee is required' });
+
+    const members = await TeamMember.find(buildListQuery(req, { _id: { $in: assigneesList } }));
+    if (members.length !== assigneesList.length) {
+      return res.status(400).json({ error: 'One or more invalid team members' });
+    }
+    const primaryAssigneeId = assigneesList[0];
+    const member = members[0];
 
     let linkedProjectId = null;
     let linkedMilestoneId = null;
@@ -300,7 +422,8 @@ export const createTeamTask = async (req, res) => {
     const initialStatus = status || 'todo';
     const task = await TeamTask.create({
       ...scope,
-      assigneeId,
+      assigneeId: primaryAssigneeId,
+      assignees: assigneesList,
       assignedBy: scope.userId,
       title: title.trim(),
       description: description?.trim() || '',
@@ -318,6 +441,10 @@ export const createTeamTask = async (req, res) => {
 
     const populated = await populateTask(TeamTask.findById(task._id));
     await broadcastScopeChange(req, 'team-task:created', populated);
+
+    const assignerName = req.user?.name || 'A workspace admin';
+    void notifyAssigneesOfTaskAssignment(task, members, assignerName);
+
     res.status(201).json({ data: populated });
   } catch (error) {
     console.error('Error creating team task:', error);
@@ -337,12 +464,13 @@ export const updateTeamTask = async (req, res) => {
       nextStatus !== undefined && String(nextStatus).trim() !== String(prevStatus);
 
     if (statusChanging) {
-      await assertCurrentUserIsAssignee(req, task.assigneeId);
+      await assertCurrentUserIsAssignee(req, task);
     }
 
     const fields = [
       'title',
       'description',
+      'assignees',
       'assigneeId',
       'department',
       'status',
@@ -369,7 +497,7 @@ export const updateTeamTask = async (req, res) => {
         });
       }
       if (req.body.completionNote !== undefined && !statusChanging) {
-        await assertCurrentUserIsAssignee(req, task.assigneeId);
+        await assertCurrentUserIsAssignee(req, task);
       }
     }
 
@@ -386,10 +514,30 @@ export const updateTeamTask = async (req, res) => {
         }
       } else if (field === 'reminders') {
         task.reminders = normalizeReminders(req.body.reminders) || [];
+      } else if (field === 'assignees') {
+        if (Array.isArray(req.body.assignees)) {
+          const ids = req.body.assignees.filter(Boolean);
+          if (ids.length === 0) return res.status(400).json({ error: 'At least one assignee is required' });
+          const members = await TeamMember.find(buildListQuery(req, { _id: { $in: ids } }));
+          if (members.length !== ids.length) return res.status(400).json({ error: 'One or more invalid team members' });
+
+          const prevIds = new Set((task.assignees || []).map(String));
+          const newMembers = members.filter((m) => !prevIds.has(String(m._id)));
+          if (newMembers.length > 0) {
+            const assignerName = req.user?.name || 'A workspace admin';
+            void notifyAssigneesOfTaskAssignment(task, newMembers, assignerName);
+          }
+
+          task.assignees = ids;
+          task.assigneeId = ids[0];
+        }
       } else if (field === 'assigneeId') {
-        const member = await TeamMember.findOne(buildListQuery(req, { _id: req.body.assigneeId }));
-        if (!member) return res.status(400).json({ error: 'Invalid team member' });
-        task.assigneeId = req.body.assigneeId;
+        if (!req.body.assignees) {
+          const member = await TeamMember.findOne(buildListQuery(req, { _id: req.body.assigneeId }));
+          if (!member) return res.status(400).json({ error: 'Invalid team member' });
+          task.assigneeId = req.body.assigneeId;
+          task.assignees = [req.body.assigneeId];
+        }
       } else if (field === 'projectId') {
         try {
           task.projectId = await resolveLinkedProjectId(req, req.body.projectId);
@@ -413,8 +561,8 @@ export const updateTeamTask = async (req, res) => {
           try {
             await assertCurrentUserIsAssignee(
               req,
-              task.assigneeId,
-              'Only the assigned team member can mark subtasks complete',
+              task,
+              'Only an assigned team member can mark subtasks complete',
             );
           } catch (accessError) {
             return res.status(accessError.statusCode || 403).json({
@@ -464,7 +612,7 @@ export const completeTeamTask = async (req, res) => {
     const task = await TeamTask.findOne(buildListQuery(req, { _id: req.params.id }));
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
-    await assertCurrentUserIsAssignee(req, task.assigneeId);
+    await assertCurrentUserIsAssignee(req, task);
 
     const { completionNote } = req.body;
     const wasDone = task.status === 'done';

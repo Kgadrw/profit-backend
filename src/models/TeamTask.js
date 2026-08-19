@@ -11,7 +11,17 @@ const teamTaskSchema = new mongoose.Schema(
     assigneeId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'TeamMember',
-      required: [true, 'Assignee is required'],
+      default: null,
+      index: true,
+    },
+    assignees: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'TeamMember',
+        },
+      ],
+      default: [],
       index: true,
     },
     assignedBy: {
@@ -150,6 +160,7 @@ teamTaskSchema.set('toObject', {
 });
 
 teamTaskSchema.index({ userId: 1, assigneeId: 1, status: 1 });
+teamTaskSchema.index({ userId: 1, assignees: 1, status: 1 });
 teamTaskSchema.index({ userId: 1, monthKey: 1 });
 teamTaskSchema.index({ userId: 1, projectId: 1, status: 1 });
 teamTaskSchema.index({ workspaceId: 1, projectId: 1, status: 1 });
